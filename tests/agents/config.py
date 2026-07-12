@@ -15,20 +15,31 @@ from device_client import DEFAULT_FIELDS
 
 @dataclass
 class RunConfig:
-    host: str
-    user: str
-    password: str
-    max_rounds: int = 0            # 0 = 无限轮次
-    max_duration: float = 0.0      # 0 = 无限时长（秒）
-    base_interval: float = 60.0
-    interval_min: float = 30.0
-    interval_max: float = 600.0
-    recover_timeout: float = 180.0
-    fail_threshold: int = 5
-    fail_consecutive: int = 3
-    strategy_text: str = ""
-    k: float = 1.5
-    event_window: float = 30.0
+    # ---- 设备连接信息（对应环境变量 BURNIN_HOST / BURNIN_USER / BURNIN_PASSWORD，
+    #      也兼容 HOST / USER / PASSWORD 覆盖）----
+    host: str                      # 设备地址，如 192.168.3.33
+    user: str                      # Digest 认证用户名，如 admin
+    password: str                  # Digest 认证密码
+
+    # ---- 拷机规模（对应 BURNIN_MAX_ROUNDS / BURNIN_MAX_DURATION）----
+    max_rounds: int = 0            # 最大轮次；0 = 不限制轮次（配合 max_duration 或手动停止）
+    max_duration: float = 0.0      # 最大运行时长（秒）；0 = 不限制（注意：0 表示无限，不是“0 秒就停”）
+
+    # ---- 自适应重启间隔（对应 BURNIN_BASE_INTERVAL / BURNIN_INTERVAL_MIN / BURNIN_INTERVAL_MAX）----
+    # 下一轮冷却 = clamp(本轮恢复耗时 * k + base_interval, interval_min, interval_max)
+    base_interval: float = 60.0    # 冷却基础值（秒）：恢复耗时之外的固定等待
+    interval_min: float = 30.0     # 自适应间隔下限（秒）：防止对恢复慢的设备压得太紧
+    interval_max: float = 600.0    # 自适应间隔上限（秒）：防止间隔无限拉长
+
+    # ---- 失败与中止（对应 BURNIN_RECOVER_TIMEOUT / BURNIN_FAIL_THRESHOLD / BURNIN_FAIL_CONSECUTIVE）----
+    recover_timeout: float = 180.0 # 单轮重启后等待设备恢复的最长时限（秒）；超时记该轮失败
+    fail_threshold: int = 5        # 累计失败达到此值 → 中止拷机
+    fail_consecutive: int = 3      # 连续失败达到此值 → 中止拷机（比累计更敏感，抓突发恶化）
+
+    # ---- 策略与判定（对应 BURNIN_STRATEGY / BURNIN_K / BURNIN_EVENT_WINDOW）----
+    strategy_text: str = ""        # 策略提示词：如“连续重启2次后断言 wifi=connect”；空=走默认流程
+    k: float = 1.5                 # 自适应间隔系数：恢复耗时乘以 k 作为冷却的一部分
+    event_window: float = 30.0     # 重启事件查询窗口（秒）：围绕 [t_reboot-window, t_recover+window] 查询
 
 
 def _env_int(name: str, default: int) -> int:

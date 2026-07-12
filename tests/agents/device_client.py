@@ -11,6 +11,8 @@ HTTP Digest 认证基于 urllib.request.HTTPDigestAuthHandler + HTTPPasswordMgrW
 
 import json
 import os
+import secrets
+import string
 import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
@@ -135,6 +137,15 @@ class DeviceClient:
         except (ValueError, UnicodeDecodeError) as e:
             raise RuntimeError(f"Failed to parse work status JSON: {e}") from e
 
+    @staticmethod
+    def _random_search_id(length: int = 32) -> str:
+        """生成随机 searchID：length 位大小写字母+数字，每次调用都不同。
+
+        海康 ISAPI 要求 searchID 为随机串，且同一会话内不应重复，否则可能命中缓存。
+        """
+        alphabet = string.ascii_letters + string.digits
+        return "".join(secrets.choice(alphabet) for _ in range(length))
+
     def get_reboot_events(
         self,
         start: str,
@@ -142,14 +153,16 @@ class DeviceClient:
         major: int = 3,
         minor: int = 123,
         limit: int = 10,
+        search_id: str | None = None,
     ) -> list:
         """POST /ISAPI/AccessControl/AcsEvent?format=json，返回 InfoList。
 
         start/end 必须为 'YYYY-MM-DDTHH:MM:SS' 格式（不带空格+时区）。
+        searchID 每次调用随机生成（可用 search_id 覆盖，便于测试）。
         """
         cond = {
             "AcsEventCond": {
-                "searchID": "00000000000000000000000000000000",
+                "searchID": search_id or self._random_search_id(),
                 "searchResultPosition": 0,
                 "maxResults": limit,
                 "major": major,
