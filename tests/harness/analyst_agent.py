@@ -299,6 +299,16 @@ class AnalystAgent(Agent):
                 )
                 if note:
                     report["llm_note"] = note
+        # 打印到控制台，让“多角度分析”在成功轮也可见（否则总线上的报告是静默的）。
+        print(
+            f"[analyst] 第 {report.get('round')} 轮分析: "
+            f"稳定性评分={report.get('stability_score')} "
+            f"通过={report.get('passed')}/{report.get('total')} "
+            f"平均恢复={report.get('avg_recover_time')}s "
+            f"建议={report.get('recommendation')}"
+        )
+        if report.get("llm_note"):
+            print(f"[analyst] LLM点评: {report['llm_note']}")
         await self.publish(self.REPORT_TOPIC, report)
 
     async def run(self) -> None:
