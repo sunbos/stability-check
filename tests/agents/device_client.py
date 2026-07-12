@@ -83,19 +83,28 @@ class DeviceClient:
 
     @staticmethod
     def _parse_status_xml(xml_bytes: bytes) -> dict:
-        """解析 ISAPI 返回的 <ResponseStatus> XML，返回 dict。"""
+        """解析 ISAPI 返回的 <ResponseStatus> XML，返回 dict。
+
+        注意响应带命名空间（xmlns="http://www.hikvision.com/ver10/XMLSchema"），
+        因此按本地标签名（忽略命名空间）查找，避免 root.find 匹配不到。
+        """
         try:
             root = ET.fromstring(xml_bytes)
         except ET.ParseError as e:
             raise RuntimeError(f"Failed to parse XML response: {e}") from e
 
-        def _text(tag):
-            el = root.find(tag)
-            return el.text if el is not None else None
+        def _local(tag: str) -> str:
+            return tag.split("}", 1)[-1] if "}" in tag else tag
+
+        def _find(tag: str):
+            for el in root.iter():
+                if _local(el.tag) == tag:
+                    return el.text
+            return None
 
         return {
-            "statusCode": _text("statusCode"),
-            "statusString": _text("statusString"),
+            "statusCode": _find("statusCode"),
+            "statusString": _find("statusString"),
         }
 
     def reboot(self) -> dict:

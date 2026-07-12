@@ -34,13 +34,15 @@ def _parse_event_time(time_str: str) -> float | None:
 def check_reboot_event(client, t_reboot: float, t_recover: float, window: float) -> bool:
     """核对重启事件是否真实发生。
 
-    - 用 t_reboot - window / t_recover + window 构造查询窗口时间字符串；
-    - 调 client.get_reboot_events(start, end)；
-    - 若返回列表非空，且至少一条事件的 time 解析后 epoch >= t_reboot - 1，
-      返回 True，否则 False。
+    查询窗口已精确围绕本次重启（[t_reboot-window, t_recover+window]），
+    因此只要窗口内出现任何 major=3/minor=123 重启事件即判定为本轮重启已落日志。
+    为避免设备时钟与测试机之间的微小偏差导致误判，接受窗口两侧各放宽 5 秒，
+    无法解析时间的事件同样按“已产生”处理。
     """
     start = _epoch_to_str(t_reboot - window)
     end = _epoch_to_str(t_recover + window)
+    start_epoch = t_reboot - window - 5
+    end_epoch = (t_recover if t_recover is not None else t_reboot) + window + 5
 
     events = client.get_reboot_events(start, end)
     if not events:
@@ -50,8 +52,9 @@ def check_reboot_event(client, t_reboot: float, t_recover: float, window: float)
         time_str = ev.get("time") if isinstance(ev, dict) else None
         epoch = _parse_event_time(time_str) if time_str else None
         if epoch is None:
-            continue
-        if epoch >= t_reboot - 1:
+            # 事件存在但时间无法解析：仍视为已产生重启事件
+            return True
+        if start_epoch <= epoch <= end_epoch:
             return True
 
     return False

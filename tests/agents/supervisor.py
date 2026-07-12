@@ -131,23 +131,28 @@ class Supervisor:
                 round_no += 1
                 continue
 
-            # 2) 轮询恢复状态直到成功或超过 recover_timeout
+            # 2) 等待设备经历 离线->恢复 的完整重启周期。
+            #    不能只判断“当前在线”：重启命令发出后设备往往仍在线片刻，
+            #    首次轮询会误判已恢复（recover_time≈0）。必须观察到先掉线再上线。
+            saw_down = False
             t_recover = None
-            poll_start = time.time()
-            while True:
+            poll_deadline = t_reboot + self.cfg.recover_timeout
+            while time.time() < poll_deadline:
                 try:
                     self.client.get_work_status()
-                    t_recover = time.time()
-                    recovered = True
-                    break
-                except Exception:  # noqa: BLE001 - 设备尚未恢复
-                    if (time.time() - poll_start) > self.cfg.recover_timeout:
-                        recovered = False
+                    if saw_down:
+                        t_recover = time.time()
                         break
-                    await asyncio.sleep(POLL_INTERVAL)
+                    # 仍处于重启前的在线态，继续等待其掉线
+                except Exception:  # noqa: BLE001 - 设备已掉线
+                    saw_down = True
+                await asyncio.sleep(POLL_INTERVAL)
 
-            if not recovered:
-                error = "device did not recover within recover_timeout"
+            if t_recover is None:
+                error = (
+                    "device did not complete reboot cycle (down->up) "
+                    "within recover_timeout"
+                )
                 self._record_round(
                     round_no=round_no,
                     t_reboot=t_reboot,
@@ -198,6 +203,13 @@ class Supervisor:
             status_changed = len(status_diff) > 0
             recover_time = t_recover - t_reboot
             passed = bool(reboot_event_found and status_ok)
+
+            print(
+                f"[burn-in] round {round_no} passed={passed} "
+                f"event={reboot_event_found} status_changed={status_changed} "
+                f"diff={status_diff} recover={recover_time:.1f}s error={error}",
+                flush=True,
+            )
 
             self._record_round(
                 round_no=round_no,
