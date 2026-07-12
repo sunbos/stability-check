@@ -41,6 +41,10 @@ class RunConfig:
     k: float = 1.5                 # 自适应间隔系数：恢复耗时乘以 k 作为冷却的一部分
     event_window: float = 30.0     # 重启事件查询窗口（秒）：围绕 [t_reboot-window, t_recover+window] 查询
 
+    # ---- 策略层智能体（Analyst / Scribe / Notifier）----
+    analyst_enabled: bool = True   # 是否启用 LLM 分析智能体；false=纯规则运行（无 LLM 调用）
+    notifier_channel: str = "print"  # 通知通道：'print'（默认，仅打印）/ 'webhook'（预留钩子）
+
 
 def _env_int(name: str, default: int) -> int:
     val = os.environ.get(name, "")
@@ -88,6 +92,9 @@ def load_config_from_env() -> RunConfig:
         strategy_text=os.environ.get("BURNIN_STRATEGY", "") or "",
         k=_env_float("BURNIN_K", 1.5),
         event_window=_env_float("BURNIN_EVENT_WINDOW", 30.0),
+        analyst_enabled=os.environ.get("BURNIN_ANALYST", "on").strip().lower()
+        not in ("off", "0", "false", "no"),
+        notifier_channel=os.environ.get("BURNIN_NOTIFIER", "print") or "print",
     )
 
 

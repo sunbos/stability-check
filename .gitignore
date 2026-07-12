@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+
+# 密钥文件：含 OpenRouter API key，绝不提交
+.env
+.pytest_cache/

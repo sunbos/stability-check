@@ -26,7 +26,10 @@ def run_config():
 
 @pytest.fixture
 def baseline(run_config):
-    """抓取设备当前工作状态作为基线快照。
+    """抓取设备当前工作状态（AcsWorkStatus 快照）作为基线，填入 RunContext.baseline。
+
+    返回的 Baseline(status=snapshot, fields=DEFAULT_FIELDS) 可直接赋给
+    RunContext.baseline（StatusCheckAgent 兼容 Baseline 实例 / dict 两种形态）。
 
     抓取失败（如设备不可达 / 认证失败）直接在 fixture 内抛错，
     使对应测试被标记为 error 而非 fail。

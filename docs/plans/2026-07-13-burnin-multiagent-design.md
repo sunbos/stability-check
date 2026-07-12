@@ -98,3 +98,104 @@ tests/
 - 重启端点 `PUT /ISAPI/System/reboot` 实测生效，返回 `statusCode 1 / OK`；约 30s 不可达、约 70s 恢复在线；重启会被记录为 `major=3, minor=123` 事件。
 - `AcsEvent` 查询：时间字段**不可**用 `2025-07-13T00:00:00 08:00`（空格+时区），须用 `2025-07-13T00:00:00` 或 `+08:00` 格式，否则 `400 badJsonContent`。
 - `AcsWorkStatus` 字段含义（单门设备实测）：`doorLockStatus:[0]`=已上锁、`doorStatus:[4]`=正常、`wifiStatus:"connect"`、`dualFrequencyModuleStatus:"offline"`、`InterfaceStatusList` 中 id1 断开 / id2 连通、`cardNum:0`。
+
+## 8. 整合实现：分层架构与“以人为本”的多智能体团队（已落地）
+
+经多轮讨论，最终落地的是**分层 + 总线驱动**的多智能体框架，而非把 LLM 直接塞进
+每一轮的判定里。核心分层原则：
+
+> **确定性的 Loop Core（可复现、低维护）必须与 LLM 分析智能体（策略层 / 政策层）
+> 严格分离。** LLM 只在不重启每轮 pass/fail 的前提下，对“事故/突发情况”做政策级
+> 决策；一旦 LLM 不可用（无 key / 网络/限流），整套拷机由规则引擎降级接管，绝不
+> 因 LLM 失效而卡死或失能。
+
+### 8.1 分层结构
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ pytest harness（配置 + fixture + 薄测试入口，仅驱动，不含逻辑） │
+├──────────────────────────────────────────────────────────────┤
+│ 事件总线 EventBus（唯一通信通道：pub/sub + request/response）   │  ← 小组“作战白板”
+├──────────────────────────────────────────────────────────────┤
+│ 确定性的 Loop Core                                            │
+│   Coordinator（重启→恢复监视→核对→自适应间隔→失败阈值中止）     │  ← 永不变的逻辑
+├──────────────────────────────────────────────────────────────┤
+│ 角色智能体（确定性，复用 DeviceClient）                        │
+│   RebootAgent / WatchAgent / EventCheckAgent / StatusCheckAgent│
+├──────────────────────────────────────────────────────────────┤
+│ 策略层智能体（可插拔，LLM 优先 + 规则降级）                     │
+│   AnalystAgent（事故决策 + 多角度分析）                        │
+│   ScribeAgent（书记员：把总线信号整理成连贯叙事）              │
+│   NotifierAgent（通知：中止/决策/告警，可插拔通道）            │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 8.2 以人为本的团队角色
+
+模拟“人不在场时，一小组如何协作处理拷机”的分工：
+
+| 角色 | 职责 | 是否参与每轮 pass/fail |
+|------|------|------------------------|
+| RebootAgent | 执行远程重启 | 否（执行） |
+| WatchAgent | 监视 DOWN→UP 完整恢复周期 | 否（监视） |
+| EventCheckAgent | 核对重启事件是否落日志（major=3/minor=123） | 是（核对） |
+| StatusCheckAgent | 比对门禁状态是否回归基线 | 是（核对） |
+| Coordinator | 主驱动：调度+自适应间隔+失败阈值中止 | 是（确定性判定） |
+| AnalystAgent | 事故决策（断电/超时等）+ 多角度稳定性分析 | **否（仅政策层）** |
+| ScribeAgent | 实时记录“作战白板”叙事，供复盘 | 否 |
+| NotifierAgent | 把中止/决策/告警推送给人 | 否 |
+| ReporterAgent | 汇总各轮结果与告警 | 否 |
+
+### 8.3 事故自治（用户离开后的灵活性）
+
+当发生突发情况（如重启过程中设备断电、网络中断导致不再恢复），流程为：
+
+1. WatchAgent 报告 `device/recovered` 且 `t_recover=None`（疑似断电）。
+2. Coordinator 判定为**事故**，广播 `incident/raise` 并 `request('analyst/advise')`。
+3. AnalystAgent 给出 `{continue, reason, source}`：
+   - 有 LLM key → 调用 OpenRouter（`tencent/hy3:free`）做决策；
+   - 无 key / 限流 / 超时 → **规则引擎**降级（断电类事故→停机，孤立异常→继续观察）。
+4. Analyst 说“停止”→ Coordinator 中止整场拷机；说“继续”→ 确定性核心仍按失败阈值
+   记账，绝不因 LLM 而绕过安全阈值。
+
+> 关键：LLM 只拥有“停机”的政策权，没有“绕过安全阈值继续”的越权。即使 LLM 完全
+> 不可用，Coordinator 的 `_consult_analyst` 超时后回退确定性逻辑，整场拷机照常运行。
+
+### 8.4 安全约束
+
+- OpenRouter key **只**从环境变量或仓库根 `.env` 读取（`.env` 已加入 `.gitignore`），
+  绝不硬编码、绝不打印、绝不写入日志。
+- `llm_client.py` 用标准库 `urllib` 实现，无第三方依赖；所有调用 30s 超时，失败静默
+  降级。
+- 规则引擎覆盖多场景（断电/网络中断、连续失败、偶发抖动），保证零 LLM 依赖也能可靠
+  处理事故。
+
+## 9. 落地文件清单
+
+```
+tests/
+  conftest.py              # 读 os.environ → RunConfig + Baseline fixture
+  test_burnin.py           # 主会话（总线驱动全团队）+ 策略层降级测试（不依赖设备）
+  agents/
+    config.py              # RunConfig / RoundResult / Baseline（含中文注释）
+    device_client.py       # Digest + 三个 ISAPI 封装（searchID 随机）
+    strategy.py            # 解析 BURNIN_STRATEGY
+    report.py              # 累计统计 + 告警
+    supervisor.py          # （早期实现，已演进为 bus 版本）
+  harness/
+    bus.py                 # 进程内异步事件总线（pub/sub + request/response）
+    agent.py               # Agent 基类（可独立运行 / 可寻址 / 可单独被驱动）
+    context.py             # RunContext + TaskBoard（共享上下文 + 共同清单）
+    llm_client.py          # OpenRouter 客户端（仅 stdlib，key 只来自 env/.env）
+    reboot_agent.py        # 执行重启
+    watch_agent.py         # 监视 DOWN→UP 恢复周期
+    event_check_agent.py   # 核对重启事件
+    status_check_agent.py  # 比对状态基线
+    reporter_agent.py      # 汇总 + 告警
+    coordinator.py         # 确定性的 Loop Core（主驱动 + 事故咨询 Analyst）
+    analyst_agent.py       # 策略层：LLM 决策 + 规则降级 + 多角度分析
+    scribe_agent.py        # 书记员叙事
+    notifier_agent.py      # 通知（可插拔通道）
+    loader.py              # 依据 RunConfig 装配全部 Agent
+```
+
