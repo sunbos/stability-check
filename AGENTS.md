@@ -1,317 +1,357 @@
-# AGENTS.md — Burn-in Stability Test Framework
+# AGENTS.md — 燃烧稳定性测试框架
 
-> A pytest-based, event-bus-driven multi-agent framework for burn-in stability
-> testing of Hikvision access-control devices (ISAPI + Digest auth).
+> 基于 pytest 的、事件总线驱动的多智能体框架，用于海康威视门禁设备
+> （ISAPI + Digest 认证）的燃烧稳定性测试。
 
-## 1. Project Overview
+## 1. 项目概述
 
-This project repeatedly reboots a Hikvision access-control device
-(`192.168.3.33`, ISAPI + Digest `admin / 121212..`) and verifies two invariants
-after every reboot:
+本项目反复重启一台海康威视门禁设备（`192.168.3.33`，ISAPI + Digest
+`admin / 121212..`），并在每次重启后验证两个不变量：
 
-1. A remote-reboot event (`AcsEvent` with `major=3, minor=123`) is logged.
-2. The device's work status (`AcsWorkStatus`) returns to the baseline snapshot.
+1. 远程重启事件（`AcsEvent`，`major=3, minor=123`）已被记录。
+2. 设备工作状态（`AcsWorkStatus`）回到基线快照。
 
-A run is a single pytest session. A team of agents collaborates via an in-process
-async event bus. The deterministic Loop Core (`Coordinator`) drives the main loop;
-an autonomous policy layer (`AnalystAgent` / `RiskAnalyst` + `TrendSupervisorAgent`)
-proactively monitors trends, votes on risk, and raises incidents — degrading
-gracefully to a rule engine when LLM is unavailable. The Coordinator applies a
-decision matrix that combines fact-layer dictatorship with risk-score modifiers,
-ensuring the burn-in never deadlocks and safety is never compromised.
+一次运行是一个 pytest 会话。一组智能体通过进程内异步事件总线协作。
+确定性循环核心（`Coordinator`）驱动主循环；自治策略层
+（`AnalystAgent` / `RiskAnalyst` + `TrendSupervisorAgent`）主动监控趋势、
+对风险投票、并在异常时 raise 事故——当 LLM 不可用时优雅降级到规则引擎。
+Coordinator 应用决策矩阵，结合事实层独裁与风险分修正，确保拷机永不死锁、
+安全底线不被突破。
 
-## 2. Architecture (Autonomous 4-Layer + Bus-Driven)
+## 2. 架构（自治 4 层 + 总线驱动）
+
+### 2.1 分层架构图
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ pytest harness (conftest + thin test entry; driving only)        │
+│                        pytest 测试框架                            │
+│              (conftest + 薄测试入口；仅负责驱动)                    │
 ├──────────────────────────────────────────────────────────────────┤
-│ EventBus — the only inter-agent channel (pub/sub + req/resp)     │
-├──────────────────────────────────────────────────────────────────┤
-│ L1 — Executor Layer (deterministic; reuse DeviceClient)          │
-│   RebootAgent / WatchAgent / EventCheckAgent / StatusCheckAgent  │
-├──────────────────────────────────────────────────────────────────┤
-│ L2 — Arbiter Layer (deterministic Loop Core)                     │
-│   Coordinator (reboot → recover → check → vote → decide → abort) │
-├──────────────────────────────────────────────────────────────────┤
-│ L3 — Autonomous Layer (proactive; LLM-first + rule fallback)     │
-│   TrendSupervisorAgent (rule-based trend detection + voting)     │
-│   AnalystAgent / RiskAnalyst (LLM risk voting + proactive alert) │
-├──────────────────────────────────────────────────────────────────┤
-│ L4 — Output Layer (observability)                                │
-│   ScribeAgent  (chronicle: private timeline + summary)           │
-│   NotifierAgent(pluggable channel: print + webhook hook)         │
+│                                                                   │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │              EventBus 事件总线（唯一通信通道）                │ │
+│  │          pub/sub 发布订阅 + req/resp 请求响应                 │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                              ▲ ▼                                  │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │  L1 执行层（确定性；复用 DeviceClient）                       │ │
+│  │                                                              │ │
+│  │  RebootAgent ──→ WatchAgent ──→ EventCheckAgent             │ │
+│  │                                   StatusCheckAgent          │ │
+│  │  职责：执行重启 / 监控恢复 / 检查事件 / 检查状态              │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                              ▲ ▼                                  │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │  L2 仲裁层（确定性循环核心）                                  │ │
+│  │                                                              │ │
+│  │  Coordinator（协调者）                                        │ │
+│  │  职责：重启→恢复→检查→投票→决策→中止                         │ │
+│  │  权限：唯一决策者（pass/fail/recheck）                        │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                              ▲ ▼                                  │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │  L3 自治层（主动监控；LLM 优先 + 规则兜底）                   │ │
+│  │                                                              │ │
+│  │  TrendSupervisorAgent（趋势监督）                             │ │
+│  │    - 规则趋势检测（递增/失败率/尖峰）                          │ │
+│  │    - 主动 raise 事故 + 投票                                   │ │
+│  │                                                              │ │
+│  │  AnalystAgent / RiskAnalyst（风险分析）                       │ │
+│  │    - LLM 风险投票 + 主动告警                                  │ │
+│  │    - 事故 advise（断电/未恢复时）                              │ │
+│  │  权限：仅建议，不决定 pass/fail                               │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                              ▲ ▼                                  │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │  L4 输出层（可观测性）                                        │ │
+│  │                                                              │ │
+│  │  ScribeAgent（记录员）                                        │ │
+│  │    - 私有时间线 + 汇总（含决策分布/风险分）                    │ │
+│  │                                                              │ │
+│  │  NotifierAgent（通知员）                                      │ │
+│  │    - 可插拔通道：print + webhook 钩子                         │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                                                                   │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-**Key principle**: the deterministic Loop Core (L2, reproducible, low-maintenance)
-is strictly separated from the autonomous policy layer (L3). L3 agents
-proactively monitor trends, vote on risk, and raise incidents — but the
-decision matrix ensures LLM/risk can **never** turn a fail into a pass (safety
-bottom line). If LLM is unavailable (no key / rate-limited / timeout), the rule
-engine takes over and the burn-in never deadlocks.
+### 2.2 每轮主题流图
 
-## 3. Directory Structure
+```
+Coordinator ──coord/reboot──→ RebootAgent
+RebootAgent ──reboot/done───→ WatchAgent, Coordinator
+WatchAgent  ──device/recovered──→ EventCheckAgent, StatusCheckAgent, Coordinator
+EventCheckAgent ──check/event──→ Coordinator
+StatusCheckAgent ──check/status──→ Coordinator
+
+  [仅 clean pass 时]
+  Coordinator ──vote/request──→ TrendSupervisorAgent, AnalystAgent
+  TrendSupervisorAgent ──vote/reply──→ Coordinator
+  AnalystAgent ──vote/reply──→ Coordinator
+  Coordinator ──[决策矩阵]──→ 决策=pass/warn/recheck/fail
+
+  Coordinator ──round/done──→ ScribeAgent, TrendSupervisorAgent, AnalystAgent
+
+  [L3 主动 raise]
+  TrendSupervisorAgent ──incident/raise──→ Coordinator, ScribeAgent, NotifierAgent
+  AnalystAgent ──incident/raise──→ Coordinator, ScribeAgent, NotifierAgent
+  Coordinator ──incident/ack──→ (确认非自身事故)
+
+  [断电/未恢复时]
+  Coordinator ──incident/raise──→ ScribeAgent, NotifierAgent
+  Coordinator ──analyst/advise──→ AnalystAgent ──analyst/advise/reply──→ Coordinator
+
+  [中止时]
+  Coordinator ──coord/abort──→ 所有监听者（Scribe / Notifier / Trend / Analyst）
+```
+
+### 2.3 核心原则
+
+确定性循环核心（L2，可复现、低维护）与自治策略层（L3）严格分离。L3 智能体
+主动监控趋势、对风险投票、并 raise 事故——但决策矩阵确保 LLM/风险分**永远不能**
+将 fail 改成 pass（安全底线）。当 LLM 不可用（无 key / 限流 / 超时）时，规则引擎
+接管，拷机永不死锁。
+
+## 3. 目录结构
 
 ```
 .
-├── AGENTS.md                       # this file
+├── AGENTS.md                       # 本文件
 ├── docs/plans/
-│   ├── 2026-07-13-burnin-multiagent-design.md        # original design rationale
-│   └── 2026-07-13-autonomous-multiagent-design.md    # autonomous-MAS redesign
+│   ├── 2026-07-13-burnin-multiagent-design.md        # 原始设计文档
+│   └── 2026-07-13-autonomous-multiagent-design.md    # 自治多智能体重设计
 └── tests/
-    ├── conftest.py                 # reads os.environ → RunConfig + Baseline fixtures
-    ├── test_burnin.py              # main session + policy-layer degradation tests
-    ├── test_context.py             # ReadOnlyContext + CoordinatorContext unit tests
-    ├── test_scribe.py              # ScribeAgent private timeline + summary tests
-    ├── test_trend_supervisor.py    # TrendSupervisorAgent trend detection + voting tests
-    ├── test_risk_analyst.py        # RiskAnalyst vote + proactive incident tests
-    ├── test_coordinator_decisions.py # Coordinator decision matrix unit tests
-    ├── agents/                     # early implementations (mostly superseded by harness/)
+    ├── conftest.py                 # 读取 os.environ → RunConfig + Baseline fixture
+    ├── test_burnin.py              # 主会话 + 策略层降级测试
+    ├── test_context.py             # ReadOnlyContext + CoordinatorContext 单元测试
+    ├── test_scribe.py              # ScribeAgent 私有时间线 + 汇总测试
+    ├── test_trend_supervisor.py    # TrendSupervisorAgent 趋势检测 + 投票测试
+    ├── test_risk_analyst.py        # RiskAnalyst 投票 + 主动事故测试
+    ├── test_coordinator_decisions.py # Coordinator 决策矩阵单元测试
+    ├── test_integration.py         # 端到端集成测试（4 个场景）
+    ├── agents/                     # 早期实现（大部分被 harness/ 取代）
     │   ├── config.py               # RunConfig / RoundResult / Baseline
-    │   ├── device_client.py        # Digest + 3 ISAPI calls (reboot / AcsEvent / AcsWorkStatus)
-    │   ├── strategy.py             # parses BURNIN_STRATEGY
-    │   ├── report.py               # Reporter (aggregate stats + alert) — reused by harness
-    │   ├── supervisor.py           # early single-process loop (superseded by harness/coordinator)
-    │   ├── reboot_agent.py         # early (superseded)
-    │   ├── event_check_agent.py    # early (superseded)
-    │   └── status_check_agent.py   # early (superseded)
-    └── harness/                    # the live autonomous multi-agent framework
-        ├── bus.py                  # async EventBus (pub/sub + request/response + '#' wildcard)
-        ├── agent.py                # Agent base class + AgentSpec
+    │   ├── device_client.py        # Digest + 3 个 ISAPI 调用（重启/AcsEvent/AcsWorkStatus）
+    │   ├── strategy.py             # 解析 BURNIN_STRATEGY
+    │   ├── report.py               # Reporter（汇总统计+告警）— 仍被 harness 复用
+    │   ├── supervisor.py           # 早期单进程循环（已被 harness/coordinator 取代）
+    │   ├── reboot_agent.py         # 早期（已取代）
+    │   ├── event_check_agent.py    # 早期（已取代）
+    │   └── status_check_agent.py   # 早期（已取代）
+    └── harness/                    # 当前自治多智能体框架
+        ├── bus.py                  # 异步 EventBus（pub/sub + req/resp + '#' 通配符）
+        ├── agent.py                # Agent 基类 + AgentSpec
         ├── context.py              # ReadOnlyContext + CoordinatorContext + TaskBoard
-        ├── llm_client.py           # OpenAI-compatible chat client (stdlib; default OpenRouter)
+        ├── llm_client.py           # OpenAI 兼容聊天客户端（标准库；默认 OpenRouter）
         ├── loader.py               # build_system(cfg) → (bus, ctx, agents)
-        ├── coordinator.py          # L2 Arbiter: Loop Core + decision matrix + incident ack
-        ├── reboot_agent.py         # L1 Executor: executes reboot
-        ├── watch_agent.py          # L1 Executor: watches DOWN→UP recovery cycle
-        ├── event_check_agent.py    # L1 Executor: checks reboot event was logged
-        ├── status_check_agent.py   # L1 Executor: diffs work status vs baseline
-        ├── analyst_agent.py        # L3 Autonomous: RiskAnalyst (vote + advise + proactive incident)
-        ├── trend_supervisor_agent.py # L3 Autonomous: rule-based trend detection + voting
-        ├── scribe_agent.py         # L4 Output: chronicle (private timeline + summary)
-        └── notifier_agent.py       # L4 Output: pluggable notification channel
+        ├── coordinator.py          # L2 仲裁者：循环核心 + 决策矩阵 + 事故确认
+        ├── reboot_agent.py         # L1 执行者：执行重启
+        ├── watch_agent.py          # L1 执行者：监控 DOWN→UP 恢复周期
+        ├── event_check_agent.py    # L1 执行者：检查重启事件是否记录
+        ├── status_check_agent.py   # L1 执行者：对比工作状态与基线
+        ├── analyst_agent.py        # L3 自治：RiskAnalyst（投票+建议+主动事故）
+        ├── trend_supervisor_agent.py # L3 自治：规则趋势检测 + 投票
+        ├── scribe_agent.py         # L4 输出：记录员（私有时间线 + 汇总）
+        └── notifier_agent.py       # L4 输出：可插拔通知通道
 ```
 
-> Note: `tests/agents/` contains the early single-process implementation. The
-> live framework is under `tests/harness/`. `device_client.py`, `config.py`,
-> `strategy.py`, and `report.py` in `tests/agents/` are still reused as
-> utilities by `harness/`.
+> 注：`tests/agents/` 包含早期单进程实现。当前框架位于 `tests/harness/`。
+> `device_client.py`、`config.py`、`strategy.py`、`report.py` 仍被 `harness/` 复用。
 
-## 4. Agents — Roles and Topic Contracts
+## 4. 智能体 — 角色与主题契约
 
-| Agent | Layer | Role | Subscribes | Publishes | Device calls | In pass/fail? |
-|-------|-------|------|------------|-----------|--------------|----------------|
-| `RebootAgent` | L1 | executor | `coord/reboot` | `reboot/done` | `reboot()` | no |
-| `WatchAgent` | L1 | watcher | `reboot/done` | `device/recovered` | `get_work_status()` poll | no |
-| `EventCheckAgent` | L1 | checker | `device/recovered` | `check/event` | `get_reboot_events()` | **yes** |
-| `StatusCheckAgent` | L1 | checker | `device/recovered` | `check/status` | `get_work_status()` | **yes** |
-| `Coordinator` | L2 | arbiter | `reboot/done`, `device/recovered`, `check/event`, `check/status`, `coord/abort`, `incident/raise`, `vote/reply` | `coord/reboot`, `round/done`, `incident/raise`, `coord/abort`, `analyst/advise`, `vote/request`, `incident/ack`, `coord/recheck` | none | **yes (decides)** |
-| `TrendSupervisorAgent` | L3 | autonomous | `round/done`, `vote/request`, `coord/abort` | `incident/raise`, `vote/reply` | none | no (advisory) |
-| `AnalystAgent` | L3 | autonomous | `analyst/advise`, `incident/raise`, `round/done`, `vote/request`, `coord/abort` | `analyst/advise/reply`, `analyst/decision`, `analyst/report`, `incident/raise`, `vote/reply` | none | no (advisory) |
-| `ScribeAgent` | L4 | chronicle | `round/done`, `incident/raise`, `analyst/decision`, `analyst/report`, `coord/abort`, `scribe/summary/request` | `scribe/summary` | none | no |
-| `NotifierAgent` | L4 | notifier | `coord/abort`, `analyst/decision`, `analyst/report`, `incident/raise`, `notify` | none | none | no |
+| 智能体 | 层 | 角色 | 订阅 | 发布 | 设备调用 | 参与判定? |
+|--------|---|------|------|------|---------|----------|
+| `RebootAgent` | L1 | 执行者 | `coord/reboot` | `reboot/done` | `reboot()` | 否 |
+| `WatchAgent` | L1 | 监控者 | `reboot/done` | `device/recovered` | `get_work_status()` 轮询 | 否 |
+| `EventCheckAgent` | L1 | 检查者 | `device/recovered` | `check/event` | `get_reboot_events()` | **是** |
+| `StatusCheckAgent` | L1 | 检查者 | `device/recovered` | `check/status` | `get_work_status()` | **是** |
+| `Coordinator` | L2 | 仲裁者 | `reboot/done`, `device/recovered`, `check/event`, `check/status`, `coord/abort`, `incident/raise`, `vote/reply` | `coord/reboot`, `round/done`, `incident/raise`, `coord/abort`, `analyst/advise`, `vote/request`, `incident/ack`, `coord/recheck` | 无 | **是（决策者）** |
+| `TrendSupervisorAgent` | L3 | 自治 | `round/done`, `vote/request`, `coord/abort` | `incident/raise`, `vote/reply` | 无 | 否（仅建议） |
+| `AnalystAgent` | L3 | 自治 | `analyst/advise`, `incident/raise`, `round/done`, `vote/request`, `coord/abort` | `analyst/advise/reply`, `analyst/decision`, `analyst/report`, `incident/raise`, `vote/reply` | 无 | 否（仅建议） |
+| `ScribeAgent` | L4 | 记录员 | `round/done`, `incident/raise`, `analyst/decision`, `analyst/report`, `coord/abort`, `scribe/summary/request` | `scribe/summary` | 无 | 否 |
+| `NotifierAgent` | L4 | 通知员 | `coord/abort`, `analyst/decision`, `analyst/report`, `incident/raise`, `notify` | 无 | 无 | 否 |
 
-### Per-round topic flow
+### 4.1 决策矩阵（设计 §5.4）
+
+Coordinator 在 clean pass 时收集投票后应用决策矩阵：
+
+| 事实层 | 风险分 | Critical 事故 | 决策 |
+|--------|-------|--------------|------|
+| `found=False` 或 `changed=True` | 任意 | 任意 | **fail**（独裁） |
+| `found=True` 且 `changed=False` | < 60 | 否 | **pass** |
+| `found=True` 且 `changed=False` | 60–80 | 否 | **warn** |
+| `found=True` 且 `changed=False` | > 80 | 否 | **recheck** |
+| `found=True` 且 `changed=False` | 任意 | 是 | **recheck** |
+
+**安全底线**：风险分**永远不能**将 fail 改成 pass。决策矩阵是建议性的——
+`passed` 标志仍纯基于事实；`decision` 和 `risk_score` 字段添加到轮次记录中供观察。
+
+### 4.2 投票综合公式
 
 ```
-Coordinator --coord/reboot--> RebootAgent
-RebootAgent --reboot/done----> WatchAgent, Coordinator
-WatchAgent  --device/recovered--> EventCheckAgent, StatusCheckAgent, Coordinator
-EventCheckAgent --check/event--> Coordinator
-StatusCheckAgent --check/status-> Coordinator
-Coordinator --vote/request--> TrendSupervisorAgent, AnalystAgent (on clean pass)
-TrendSupervisorAgent --vote/reply--> Coordinator
-AnalystAgent --vote/reply--> Coordinator
-Coordinator --round/done--> ScribeAgent, TrendSupervisorAgent, AnalystAgent
-TrendSupervisorAgent --incident/raise--> Coordinator, ScribeAgent, NotifierAgent (proactive)
-AnalystAgent --incident/raise--> Coordinator, ScribeAgent, NotifierAgent (proactive)
-Coordinator --incident/ack--> (acknowledges non-self incidents)
-Coordinator --incident/raise--> ScribeAgent, NotifierAgent (on no-recovery)
-Coordinator --analyst/advise (req/resp)--> AnalystAgent --analyst/advise/reply--> Coordinator
-Coordinator --coord/abort--> everyone listening (Scribe / Notifier / TrendSupervisor / Analyst)
+综合风险 = Σ(各投票者 risk_score × 权重 × 置信度) / Σ(权重 × 置信度)
+
+权重：TrendSupervisor = 0.5, RiskAnalyst = 0.5
+置信度 = 0.0 → 弃权（不参与加权）
+全部弃权 → risk = 50（中性默认）
 ```
 
-### Decision matrix (design §5.4)
+## 5. 通信 — EventBus
 
-The Coordinator applies a decision matrix after collecting votes on clean passes:
+文件：[tests/harness/bus.py](tests/harness/bus.py)
 
-| Fact layer | Risk score | Critical incident | Decision |
-|------------|-----------|-------------------|----------|
-| `found=False` or `changed=True` | any | any | **fail** (dictatorship) |
-| `found=True` and `changed=False` | < 60 | no | **pass** |
-| `found=True` and `changed=False` | 60–80 | no | **warn** |
-| `found=True` and `changed=False` | > 80 | no | **recheck** |
-| `found=True` and `changed=False` | any | yes | **recheck** |
+- 进程内异步总线；仅标准库（`asyncio`、`secrets`）。
+- `publish(topic, message)` — 广播到所有匹配的 handler。
+- `subscribe(topic, handler)` — handler 可同步或异步。
+- `request(topic, message, timeout)` — 发布 + 等待 `topic/reply` 上第一个回复
+  （按 `req_id` 关联）。超时抛 `TimeoutError`。
+- 主题匹配：精确匹配或尾部 `#` 通配符（`a/#` 匹配 `a`、`a/b`、...）。
+- **智能体之间永远不直接调用** — 只通过总线。这为将来替换进程内总线为
+  网络传输而不修改 agent 代码留了门。
 
-**Safety bottom line**: risk score can **never** turn a fail into a pass. The
-decision matrix is advisory — `passed` flag remains purely fact-based; `decision`
-and `risk_score` fields are added to the round record for observability.
+## 6. 共享状态 — ReadOnlyContext + CoordinatorContext + TaskBoard
 
-## 5. Communication — EventBus
+文件：[tests/harness/context.py](tests/harness/context.py)
 
-File: [tests/harness/bus.py](tests/harness/bus.py)
+- `ReadOnlyContext`：所有 agent 持有的只读视图。包含基线（启动时注入，
+  不可变）、strategy_text（不可变）、round_history_snapshot（不可变元组，
+  由 Coordinator 在每轮广播后刷新）、aborted（只读）。
+- `CoordinatorContext`：仅由 Coordinator 持有的可写子类。提供 `append_round` /
+  `mark_aborted` / `publish_state` 等写方法。每次写操作刷新
+  `round_history_snapshot`（不可变元组）。
+- `TaskBoard`：共享任务列表（状态：`pending` / `doing` / `done` / `failed`）。
+  由 Coordinator 维护；agent 可直接读取。
+- **私有状态原则**：L3 自治 agent 维护私有状态（窗口、计数器），**不**直接读
+  `ctx.round_history`。它们订阅 `round/done` 并累积自己的私有窗口。这确保了
+  自治多智能体的自包含原则。
+- `RunContext` 保留为 `CoordinatorContext` 的向后兼容别名。
 
-- In-process async bus; stdlib only (`asyncio`, `secrets`).
-- `publish(topic, message)` — broadcast to all matching handlers.
-- `subscribe(topic, handler)` — handlers may be sync or async.
-- `request(topic, message, timeout)` — publish + await first reply on
-  `topic/reply` correlated by `req_id`. Raises `TimeoutError` on timeout.
-- Topic matching: exact or trailing `#` wildcard (`a/#` matches `a`, `a/b`, ...).
-- **Agents never call each other directly** — only via the bus. This keeps the
-  door open to swapping the in-process bus for a network transport without
-  touching agent code.
+## 7. 配置（环境变量）
 
-## 6. Shared State — ReadOnlyContext + CoordinatorContext + TaskBoard
+由 `tests/agents/config.py` 的 `load_config_from_env()` 读取；通过
+`tests/conftest.py` 注入。
 
-File: [tests/harness/context.py](tests/harness/context.py)
+### 运行参数
+| 变量 | 默认值 | 含义 |
+|------|--------|------|
+| `BURNIN_STRATEGY` | `""` | 自然语言策略提示（由 `strategy.py` 解析） |
+| `BURNIN_MAX_ROUNDS` | `0` (∞) | 最大轮次 |
+| `BURNIN_MAX_DURATION` | `0` (∞) | 最大总时长（秒） |
+| `BURNIN_BASE_INTERVAL` | `60` | 轮间基础冷却（秒） |
+| `BURNIN_INTERVAL_MIN` / `BURNIN_INTERVAL_MAX` | `30` / `600` | 自适应间隔上下限（秒） |
+| `BURNIN_RECOVER_TIMEOUT` | `180` | 单轮恢复超时（秒） |
+| `BURNIN_FAIL_THRESHOLD` | `5` | 累计失败 → 中止 |
+| `BURNIN_FAIL_CONSECUTIVE` | `3` | 连续失败 → 中止 |
+| `BURNIN_K` | `1.5` | 自适应间隔系数 |
+| `BURNIN_EVENT_WINDOW` | `30` | 事件检查窗口（秒） |
+| `BURNIN_PER_ROUND_LLM` | `0` | 设为 `1/true/on` 时 Analyst 每轮 LLM 点评 |
+| `BURNIN_NOTIFIER` | `print` | 通知通道：`print` 或 `webhook` |
+| `BURNIN_VOTE_TIMEOUT` | `1.0` | 每轮投票收集超时（秒） |
 
-- `ReadOnlyContext`: read-only view held by all agents. Contains baseline
-  (injected at startup, immutable), strategy_text (immutable),
-  round_history_snapshot (immutable tuple, refreshed by Coordinator after each
-  round broadcast), aborted (read-only).
-- `CoordinatorContext`: writable subclass held **only** by Coordinator.
-  Provides `append_round` / `mark_aborted` / `publish_state` and other write
-  methods. Each write refreshes `round_history_snapshot` (immutable tuple).
-- `TaskBoard`: shared task list (statuses: `pending` / `doing` / `done` /
-  `failed`). Maintained by the Coordinator; agents may read it directly.
-- **Private state principle**: L3 autonomous agents maintain private state
-  (windows, counters) and do **not** read `ctx.round_history` directly. They
-  subscribe to `round/done` and accumulate their own private windows. This
-  enforces the autonomous-MAS principle that agents are self-contained.
-- `RunContext` is kept as a backward-compat alias for `CoordinatorContext`.
+### 设备凭据
+| 变量 | 默认值 | 含义 |
+|------|--------|------|
+| `BURNIN_HOST` | `192.168.3.33` | 设备地址 |
+| `BURNIN_USER` | `admin` | Digest 用户名 |
+| `BURNIN_PASSWORD` | （必填） | Digest 密码 |
 
-## 7. Configuration (Environment Variables)
+### LLM（OpenAI 兼容；默认 OpenRouter）
+| 变量 | 回退 | 含义 |
+|------|------|------|
+| `LLM_API_KEY` | `OPENROUTER_API_KEY` | API key（首选名称） |
+| `LLM_BASE_URL` | `OPENROUTER_BASE_URL` → `https://openrouter.ai/api/v1` | 基址 URL |
+| `LLM_MODEL` | `OPENROUTER_MODEL` → `tencent/hy3:free` | 模型名 |
 
-Read by `tests/agents/config.py` via `load_config_from_env()`; injected through
-`tests/conftest.py`.
+通过设置 `LLM_BASE_URL` 切换平台（如 DeepSeek `https://api.deepseek.com/v1`、
+Moonshot `https://api.moonshot.cn/v1`、本地 Ollama `http://localhost:11434/v1`）。
+Key 从环境变量或仓库根目录 `.env` 读取（`.env` 已 gitignore）；永不打印。
 
-### Run parameters
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `BURNIN_STRATEGY` | `""` | Natural-language strategy hint (parsed by `strategy.py`) |
-| `BURNIN_MAX_ROUNDS` | `0` (∞) | Max rounds |
-| `BURNIN_MAX_DURATION` | `0` (∞) | Max total seconds |
-| `BURNIN_BASE_INTERVAL` | `60` | Base cooldown between rounds (s) |
-| `BURNIN_INTERVAL_MIN` / `BURNIN_INTERVAL_MAX` | `30` / `600` | Adaptive interval bounds (s) |
-| `BURNIN_RECOVER_TIMEOUT` | `180` | Per-round recovery timeout (s) |
-| `BURNIN_FAIL_THRESHOLD` | `5` | Cumulative failures → abort |
-| `BURNIN_FAIL_CONSECUTIVE` | `3` | Consecutive failures → abort |
-| `BURNIN_K` | `1.5` | Adaptive interval multiplier |
-| `BURNIN_EVENT_WINDOW` | `30` | Event-check window (s) |
-| `BURNIN_PER_ROUND_LLM` | `0` | If `1/true/on`, Analyst LLM comments every round |
-| `BURNIN_NOTIFIER` | `print` | Notifier channel: `print` or `webhook` |
-| `BURNIN_VOTE_TIMEOUT` | `1.0` | Vote collection timeout per round (s) |
+## 8. 运行
 
-### Device credentials
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `BURNIN_HOST` | `192.168.3.33` | Device host |
-| `BURNIN_USER` | `admin` | Digest user |
-| `BURNIN_PASSWORD` | (required) | Digest password |
-
-### LLM (OpenAI-compatible; default OpenRouter)
-| Variable | Fallback | Meaning |
-|----------|----------|---------|
-| `LLM_API_KEY` | `OPENROUTER_API_KEY` | API key (preferred name) |
-| `LLM_BASE_URL` | `OPENROUTER_BASE_URL` → `https://openrouter.ai/api/v1` | Base URL |
-| `LLM_MODEL` | `OPENROUTER_MODEL` → `tencent/hy3:free` | Model name |
-
-Switch platform by setting `LLM_BASE_URL` (e.g. DeepSeek `https://api.deepseek.com/v1`,
-Moonshot `https://api.moonshot.cn/v1`, local Ollama `http://localhost:11434/v1`).
-Keys are read from env or repo-root `.env` (`.env` is gitignored); never logged.
-
-## 8. Running
-
-### Full burn-in session (needs real device)
+### 完整拷机会话（需要真实设备）
 ```powershell
 $env:BURNIN_PASSWORD = "121212.."
 python -m pytest tests/test_burnin.py::test_burnin_session -v -s
 ```
 
-### Policy-layer tests (no device needed)
+### 策略层测试（无需设备）
 ```powershell
 python -m pytest tests/test_burnin.py::test_analyst_rulebased_degradation `
                   tests/test_burnin.py::test_coordinator_consults_analyst_on_no_recovery -v -s
 ```
 
-### Autonomous-layer unit tests (no device needed)
+### 自治层单元测试（无需设备）
 ```powershell
 python -m pytest tests/test_context.py tests/test_scribe.py `
                   tests/test_trend_supervisor.py tests/test_risk_analyst.py `
-                  tests/test_coordinator_decisions.py -v
+                  tests/test_coordinator_decisions.py tests/test_integration.py -v
 ```
 
-### Run a single agent standalone
-Every agent module has a `__main__` block, e.g.:
+### 单独运行某个 agent
+每个 agent 模块都有 `__main__` 块，例如：
 ```powershell
 python tests/harness/scribe_agent.py
 ```
 
-## 9. Key Design Principles
+## 9. 核心设计原则
 
-1. **Strict layering**: deterministic Loop Core (L2) never depends on LLM; LLM
-   never decides per-round pass/fail. L3 autonomous agents are advisory only.
-2. **Bus-only inter-agent communication**: no direct method calls between
-   agents; this enables future distributed deployment.
-3. **Graceful degradation**: LLM unavailability → rule engine; device
-   unreachable → recorded as failure; never deadlocks.
-4. **Adaptive interval**: `next = clamp(recover_time × k + base, MIN, MAX)` —
-   slow device → longer cooldown; fast device → tight loop. No manual tuning.
-5. **Stdlib only**: no third-party dependencies (uses `urllib`, `asyncio`,
-   `secrets`, `dataclasses`). The LLM client also uses `urllib`.
-6. **Safety**: API keys only from env / `.env`; never hardcoded, never printed.
-7. **Reproducibility**: per-round pass/fail is purely deterministic; LLM is
-   advisory and overridable.
-8. **Autonomous proactive monitoring**: L3 agents (TrendSupervisor +
-   RiskAnalyst) proactively detect trends and raise incidents without being
-   asked. This is the core autonomy property — agents don't just respond to
-   queries, they independently monitor and alert.
-9. **Decision matrix safety**: fact layer is dictatorial (found/changed →
-   fail); risk score can only add warn/recheck markers, never override a fail.
-   Critical incidents force recheck regardless of risk score.
-10. **Mandatory incident ack**: Coordinator must ack every incident raised by
-    other agents (forced echo), but never acks its own. This ensures no
-    incident goes unnoticed.
-11. **Private state isolation**: L3 agents maintain private windows/counters
-    and do not read shared context's round_history directly. They subscribe to
-    `round/done` and accumulate their own state.
+1. **严格分层**：确定性循环核心（L2）永不依赖 LLM；LLM 永不决定单轮 pass/fail。
+   L3 自治 agent 仅提供建议。
+2. **总线唯一通信**：agent 之间无直接方法调用；这使未来分布式部署成为可能。
+3. **优雅降级**：LLM 不可用 → 规则引擎；设备不可达 → 记为失败；永不死锁。
+4. **自适应间隔**：`next = clamp(recover_time × k + base, MIN, MAX)` —
+   设备慢 → 冷却更长；设备快 → 紧凑循环。无需手动调参。
+5. **仅标准库**：无第三方依赖（使用 `urllib`、`asyncio`、`secrets`、
+   `dataclasses`）。LLM 客户端也用 `urllib`。
+6. **安全**：API key 仅来自环境变量 / `.env`；永不硬编码，永不打印。
+7. **可复现**：单轮 pass/fail 完全确定性；LLM 仅建议，可覆盖。
+8. **自治主动监控**：L3 agent（TrendSupervisor + RiskAnalyst）主动检测趋势
+   并 raise 事故，无需被询问。这是核心自治属性——agent 不只是响应查询，
+   它们独立监控并告警。
+9. **决策矩阵安全**：事实层独裁（found/changed → fail）；风险分只能添加
+   warn/recheck 标记，永不能覆盖 fail。Critical 事故无视风险分强制 recheck。
+10. **强制事故确认**：Coordinator 必须 ack 其他 agent raise 的每个事故
+    （强制回声），但永不 ack 自己 raise 的。这确保没有事故被忽视。
+11. **私有状态隔离**：L3 agent 维护私有窗口/计数器，不直接读共享上下文的
+    round_history。它们订阅 `round/done` 并累积自己的状态。
 
-## 10. Failure Modes and Degradation
+## 10. 故障模式与降级
 
-| Failure | Detection | Response |
-|---------|-----------|----------|
-| Device doesn't recover | `WatchAgent` poll timeout | `device/recovered` with `t_recover=None` → Coordinator records failure |
-| Reboot event missing | `EventCheckAgent` finds no `3/123` in window | `check/event` `found=False` → round fails |
-| Status drift | `StatusCheckAgent` diff vs baseline | `check/status` `changed=True` → round fails |
-| Cumulative failures ≥ threshold | Coordinator counter | `coord/abort` → graceful shutdown |
-| Consecutive failures ≥ threshold | Coordinator counter | `coord/abort` → graceful shutdown |
-| LLM unavailable / timeout | `AnalystAgent._ensure_llm` returns None | Rule engine decides; Coordinator's `_consult_analyst` returns None → deterministic fallback |
-| Analyst advises stop | `analyst/advise/reply` `continue=False` | Coordinator aborts |
-| Analyst advises continue | `analyst/advise/reply` `continue=True` | Coordinator records failure, threshold still applies |
-| No voters reply | `_collect_votes` timeout | Default neutral risk (50) → decision matrix treats as pass |
-| All voters abstain | `_combine_votes` returns `all_abstain` | Risk score = 50 → decision matrix treats as pass |
-| TrendSupervisor detects increment streak | 3 consecutive → warn; 5 → critical | `incident/raise` → Coordinator acks; critical forces recheck |
-| TrendSupervisor detects fail rate > 30% | ≥5 samples, upward crossing | `incident/raise` (warn) → Coordinator logs |
-| TrendSupervisor detects recover time spike | > 2× avg(history) | `incident/raise` (warn) → Coordinator logs |
-| RiskAnalyst: 3 consecutive high risk | risk > 80 for 3 rounds | `incident/raise` (critical) → Coordinator forces recheck |
-| RiskAnalyst: single very high risk | risk ≥ 90 | `incident/raise` (warn) → Coordinator logs |
-| Critical incident raised | L3 agent publishes `incident/raise` severity=critical | Coordinator acks + sets `_has_critical_incident` → decision matrix forces recheck |
+| 故障 | 检测 | 响应 |
+|------|------|------|
+| 设备未恢复 | `WatchAgent` 轮询超时 | `device/recovered` t_recover=None → Coordinator 记失败 |
+| 重启事件缺失 | `EventCheckAgent` 窗口内无 `3/123` | `check/event` found=False → 轮次失败 |
+| 状态漂移 | `StatusCheckAgent` 对比基线 | `check/status` changed=True → 轮次失败 |
+| 累计失败 ≥ 阈值 | Coordinator 计数器 | `coord/abort` → 优雅关闭 |
+| 连续失败 ≥ 阈值 | Coordinator 计数器 | `coord/abort` → 优雅关闭 |
+| LLM 不可用 / 超时 | `AnalystAgent._ensure_llm` 返回 None | 规则兜底投票；Coordinator 的 `_consult_analyst` 返回 None → 确定性降级 |
+| Analyst 建议停止 | `analyst/advise/reply` continue=False | Coordinator 中止 |
+| Analyst 建议继续 | `analyst/advise/reply` continue=True | Coordinator 记失败，阈值仍适用 |
+| 无投票者回复 | `_collect_votes` 超时 | 默认中性风险（50）→ 决策矩阵视为 pass |
+| 全部弃权 | `_combine_votes` 返回 `all_abstain` | 风险分 = 50 → 决策矩阵视为 pass |
+| TrendSupervisor 检测递增连续 | 3 连续 → warn；5 → critical | `incident/raise` → Coordinator acks；critical 强制 recheck |
+| TrendSupervisor 检测失败率 > 30% | ≥5 样本，向上穿越 | `incident/raise`（warn）→ Coordinator 记录 |
+| TrendSupervisor 检测恢复时间尖峰 | > 2× 历史均值 | `incident/raise`（warn）→ Coordinator 记录 |
+| RiskAnalyst：3 连续高风险 | risk > 80 持续 3 轮 | `incident/raise`（critical）→ Coordinator 强制 recheck |
+| RiskAnalyst：单轮极高风险 | risk ≥ 90 | `incident/raise`（warn）→ Coordinator 记录 |
+| Critical 事故 raise | L3 agent 发布 `incident/raise` severity=critical | Coordinator acks + 设置 `_has_critical_incident` → 决策矩阵强制 recheck |
 
-## 11. Known Limitations
+## 11. 已知限制
 
-- `tests/agents/` retains early single-process implementations (`supervisor.py`,
-  `reboot_agent.py`, etc.) that are **superseded** by `harness/`. Only
-  `device_client.py`, `config.py`, `strategy.py`, `report.py` are still reused.
-- `ReporterAgent` has been removed from the live framework (Phase 3); its
-  functionality is absorbed by `ScribeAgent` + `NotifierAgent`.
-- The `CoordinatorContext` is a single in-memory object; not safe across
-  processes (would need rework for a distributed bus).
-- `NotifierAgent`'s webhook channel is a stub (`_send_webhook` is a no-op).
-- The `coord/recheck` topic is published but no agent currently subscribes to
-  trigger an actual recheck round. The decision matrix marks rounds as
-  `recheck` in the record, but the recheck mechanism itself is future work.
-- LLM is consulted on incidents (advise) and per-round voting (vote); per-round
-  LLM commentary is opt-in via `BURNIN_PER_ROUND_LLM=1`.
-- `test_burnin_session` requires a real device and is not run in CI; only
-  policy-layer and autonomous-layer unit tests are device-free.
+- `tests/agents/` 保留了早期单进程实现（`supervisor.py`、`reboot_agent.py`
+  等），已被 `harness/` **取代**。仅 `device_client.py`、`config.py`、
+  `strategy.py`、`report.py` 仍被复用。
+- `ReporterAgent` 已从当前框架中移除（Phase 3）；其功能由 `ScribeAgent` +
+  `NotifierAgent` 吸收。
+- `CoordinatorContext` 是单内存对象；跨进程不安全（分布式总线需重构）。
+- `NotifierAgent` 的 webhook 通道是桩（`_send_webhook` 是空操作）。
+- `coord/recheck` 主题已发布但当前无 agent 订阅来触发实际 recheck 轮次。
+  决策矩阵在记录中标记轮次为 `recheck`，但 recheck 机制本身是未来工作。
+- LLM 在事故（advise）和每轮投票（vote）时被咨询；每轮 LLM 点评通过
+  `BURNIN_PER_ROUND_LLM=1` 按需开启。
+- `test_burnin_session` 需要真实设备，不在 CI 中运行；仅策略层和自治层
+  单元测试是无设备的。
+- `bus.publish(vote/request)` 会等待所有订阅者完成（包括 LLM 调用），
+  导致 `vote_timeout` 在实际运行中可能失效。当前行为可接受（投票最终
+  到达），但每轮会被 LLM 调用拖慢约 15 秒。
