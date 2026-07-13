@@ -102,7 +102,7 @@ class ScribeAgent(Agent):
         """产出记录员视角的整体摘要。"""
         return {
             "narrative": list(self.narrative),
-            "rounds": len(self.ctx.round_history),
+            "rounds": len(self.ctx.history()),
             "aborted": getattr(self.ctx, "aborted", False),
         }
 

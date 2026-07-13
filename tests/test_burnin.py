@@ -179,7 +179,7 @@ def test_coordinator_consults_analyst_on_no_recovery():
         coordinator._start_time = 0.0
         coordinator._round_done_event = asyncio.Event()
         coordinator._aborted = False
-        coordinator.ctx.aborted = False
+        # ctx.aborted 由 CoordinatorContext 初始化为 False，无需重置
         coordinator.round_no = 1  # 模拟 run() 主循环已推进到本轮
         coordinator._round["round_no"] = 1
         coordinator.subscribe("reboot/done", coordinator._on_reboot_done)
@@ -211,7 +211,7 @@ def test_coordinator_consults_analyst_on_no_recovery():
         coordinator2._start_time = 0.0
         coordinator2._round_done_event = asyncio.Event()
         coordinator2._aborted = False
-        coordinator2.ctx.aborted = False
+        # ctx.aborted 由 CoordinatorContext 初始化为 False，无需重置
         coordinator2.round_no = 1  # 模拟 run() 主循环已推进到本轮
         coordinator2._round["round_no"] = 1
         coordinator2.subscribe("reboot/done", coordinator2._on_reboot_done)

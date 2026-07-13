@@ -116,7 +116,7 @@ class ReporterAgent(Agent):
         result.setdefault("statuses", list(self.statuses))
 
         # 写入共享上下文（小组白板）
-        self.ctx.record_round(result)
+        self.ctx.append_round(result)
         # 写入内部 Reporter 做汇总
         self.reporter.record(result)
 

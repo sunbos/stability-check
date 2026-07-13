@@ -218,7 +218,7 @@ class AnalystAgent(Agent):
     # ------------------------------------------------------------------ #
     def round_report(self, record: dict) -> dict:
         """产出本轮的多角度稳定性分析（规则版，始终可用）。"""
-        history = self.ctx.round_history
+        history = list(self.ctx.history())
         total = len(history)
         passed = sum(1 for r in history if r.get("passed"))
         failed = total - passed
@@ -243,7 +243,7 @@ class AnalystAgent(Agent):
 
     def _short_history(self, n: int = 8) -> list:
         """取最近 n 轮的关键字段摘要，避免把整段历史塞给 LLM。"""
-        recent = self.ctx.round_history[-n:]
+        recent = list(self.ctx.history(n))
         out = []
         for r in recent:
             out.append(

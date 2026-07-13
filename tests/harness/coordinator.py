@@ -61,8 +61,7 @@ class Coordinator(Agent):
         self._stop_event = None
         self._round_done_event: asyncio.Event | None = None
         self._round = self._new_round_state()
-        # 共享上下文的中止标志（run() 也会再置 False）。
-        self.ctx.aborted = False
+        # CoordinatorContext.aborted 默认 False，无需在此重复设置。
 
         # ---- 配置（缺失时回退默认值，保持可独立运行）----
         c = self.cfg
@@ -132,7 +131,7 @@ class Coordinator(Agent):
     async def _on_abort(self, message: dict) -> None:
         """收到 'coord/abort'（可能由自身触发）：标记中止并释放轮次等待。"""
         self._aborted = True
-        self.ctx.aborted = True
+        self.ctx.mark_aborted()
         reason = message.get("reason", "unknown")
         self.ctx.append_log(f"[协调者] 中止: {reason}")
         if self._round_done_event is not None:
@@ -190,7 +189,7 @@ class Coordinator(Agent):
             self.consecutive_failures = 0
         # 每一轮都执行了一次重启，计数累加（供策略/日志）。
         self.consecutive_reboots += 1
-        self.ctx.consecutive_reboots = self.consecutive_reboots
+        self.ctx.set_consecutive_reboots(self.consecutive_reboots)
 
         record = {
             "round": round_no,
@@ -210,7 +209,7 @@ class Coordinator(Agent):
 
         # 写入共享清单与轮次历史。
         self.ctx.board.mark(f"round/{round_no}", "done", record)
-        self.ctx.record_round(record)
+        self.ctx.append_round(record)
 
         tag = "通过" if passed else "失败"
         ts = time.strftime("%H:%M:%S", time.localtime())
@@ -233,6 +232,8 @@ class Coordinator(Agent):
 
         # 回报 ReporterAgent 做汇总。
         await self.publish(self.ROUND_DONE_TOPIC, record)
+        # Broadcast state snapshot so autonomous agents can refresh their views.
+        await self.ctx.publish_state(self.bus)
 
         # 检查中止阈值。
         if self.total_failures >= self.fail_threshold:
@@ -259,7 +260,7 @@ class Coordinator(Agent):
         self.total_failures += 1
         self.consecutive_failures += 1
         self.consecutive_reboots += 1
-        self.ctx.consecutive_reboots = self.consecutive_reboots
+        self.ctx.set_consecutive_reboots(self.consecutive_reboots)
 
         record = {
             "round": round_no,
@@ -278,7 +279,7 @@ class Coordinator(Agent):
             "timestamp": time.time(),
         }
         self.ctx.board.mark(f"round/{round_no}", "failed", record)
-        self.ctx.record_round(record)
+        self.ctx.append_round(record)
         self.ctx.append_log(f"[拷机] 第 {round_no} 轮 失败: {reason}")
         ts = time.strftime("%H:%M:%S", time.localtime())
         print(f"[{ts}] [拷机] 第 {round_no} 轮 失败: {reason}")
@@ -287,6 +288,8 @@ class Coordinator(Agent):
 
     async def _publish_and_check_abort(self, record: dict) -> None:
         await self.publish(self.ROUND_DONE_TOPIC, record)
+        # Broadcast state snapshot so autonomous agents can refresh their views.
+        await self.ctx.publish_state(self.bus)
         if self.total_failures >= self.fail_threshold:
             await self._abort(
                 f"累计失败 {self.total_failures} >= 阈值 {self.fail_threshold}"
@@ -303,7 +306,7 @@ class Coordinator(Agent):
 
     async def _abort(self, reason: str) -> None:
         self._aborted = True
-        self.ctx.aborted = True
+        self.ctx.mark_aborted()
         await self.publish(self.ABORT_TOPIC, {"reason": reason})
         # 释放 run() 主循环对 round/done 的等待，使其进入中止分支。
         if self._round_done_event is not None:
@@ -382,7 +385,7 @@ class Coordinator(Agent):
         self._start_time = time.time()
         self._round_done_event = asyncio.Event()
         self._aborted = False
-        self.ctx.aborted = False
+        # CoordinatorContext.aborted 由 mark_aborted() 管理，run() 启动时无需重置。
 
         # 订阅关心的主题。
         self.subscribe(self.REBOOT_DONE_TOPIC, self._on_reboot_done)
