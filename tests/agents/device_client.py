@@ -76,12 +76,12 @@ class DeviceClient:
             except Exception:
                 body_bytes = b""
             raise RuntimeError(
-                f"HTTPError {e.code} on {method} {url}: {body_bytes.decode('utf-8', 'replace')}"
+                f"HTTP错误 {e.code} 于 {method} {url}: {body_bytes.decode('utf-8', 'replace')}"
             ) from e
         except urllib.error.URLError as e:
-            raise RuntimeError(f"URLError on {method} {url}: {e.reason}") from e
+            raise RuntimeError(f"URL错误 于 {method} {url}: {e.reason}") from e
         except Exception as e:
-            raise RuntimeError(f"Request failed on {method} {url}: {e}") from e
+            raise RuntimeError(f"请求失败 于 {method} {url}: {e}") from e
 
     @staticmethod
     def _parse_status_xml(xml_bytes: bytes) -> dict:
@@ -93,7 +93,7 @@ class DeviceClient:
         try:
             root = ET.fromstring(xml_bytes)
         except ET.ParseError as e:
-            raise RuntimeError(f"Failed to parse XML response: {e}") from e
+            raise RuntimeError(f"解析XML响应失败: {e}") from e
 
         def _local(tag: str) -> str:
             return tag.split("}", 1)[-1] if "}" in tag else tag
@@ -118,10 +118,10 @@ class DeviceClient:
             headers={"Content-Type": "application/json"},
         )
         if status != 200:
-            raise RuntimeError(f"reboot returned status {status}")
+            raise RuntimeError(f"重启返回状态码 {status}")
         result = self._parse_status_xml(body)
         if result.get("statusCode") is None:
-            raise RuntimeError(f"reboot response missing statusCode: {body!r}")
+            raise RuntimeError(f"重启响应缺少 statusCode: {body!r}")
         return result
 
     def get_work_status(self) -> dict:
@@ -131,11 +131,11 @@ class DeviceClient:
             "/ISAPI/AccessControl/AcsWorkStatus?format=json",
         )
         if status != 200:
-            raise RuntimeError(f"get_work_status returned status {status}")
+            raise RuntimeError(f"获取工作状态返回状态码 {status}")
         try:
             return json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as e:
-            raise RuntimeError(f"Failed to parse work status JSON: {e}") from e
+            raise RuntimeError(f"解析工作状态 JSON 失败: {e}") from e
 
     @staticmethod
     def _random_search_id(length: int = 32) -> str:
@@ -178,11 +178,11 @@ class DeviceClient:
             body=cond,
         )
         if status != 200:
-            raise RuntimeError(f"get_reboot_events returned status {status}")
+            raise RuntimeError(f"获取重启事件返回状态码 {status}")
         try:
             data = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as e:
-            raise RuntimeError(f"Failed to parse AcsEvent JSON: {e}") from e
+            raise RuntimeError(f"解析 AcsEvent JSON 失败: {e}") from e
 
         info_list = data.get("AcsEvent", {}).get("InfoList")
         if not info_list:

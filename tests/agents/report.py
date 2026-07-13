@@ -29,7 +29,7 @@ class Reporter:
 
     def alert(self, msg: str):
         """打印告警，并预留 webhook 钩子。"""
-        print(f"[ALERT] {msg}")
+        print(f"[告警] {msg}")
         self.send_webhook(msg)
 
     def send_webhook(self, msg):

@@ -69,12 +69,12 @@ class Supervisor:
         cfg = self.cfg
         if cfg.fail_threshold > 0 and total_failures >= cfg.fail_threshold:
             return True, (
-                f"total failures {total_failures} >= threshold {cfg.fail_threshold}"
+                f"累计失败 {total_failures} >= 阈值 {cfg.fail_threshold}"
             )
         if cfg.fail_consecutive > 0 and consecutive_failures >= cfg.fail_consecutive:
             return True, (
-                f"consecutive failures {consecutive_failures} "
-                f">= limit {cfg.fail_consecutive}"
+                f"连续失败 {consecutive_failures} "
+                f">= 上限 {cfg.fail_consecutive}"
             )
         return False, ""
 
@@ -109,7 +109,7 @@ class Supervisor:
                 reboot_agent.run_reboot(self.client)
             except Exception as e:  # noqa: BLE001 - 统一吞掉并标记失败
                 reboot_ok = False
-                error = f"reboot failed: {e}"
+                error = f"重启失败: {e}"
                 self._record_round(
                     round_no=round_no,
                     t_reboot=t_reboot,
@@ -150,8 +150,7 @@ class Supervisor:
 
             if t_recover is None:
                 error = (
-                    "device did not complete reboot cycle (down->up) "
-                    "within recover_timeout"
+                    "设备未在恢复超时内完成重启周期（离线->上线）"
                 )
                 self._record_round(
                     round_no=round_no,
@@ -195,7 +194,7 @@ class Supervisor:
                 )
                 status_ok, status_diff = status_result
             except Exception as e:  # noqa: BLE001 - 检查异常记为本轮失败
-                error = f"post-recover check failed: {e}"
+                error = f"恢复后检查失败: {e}"
                 reboot_event_found = False
                 status_ok = False
                 status_diff = {}
@@ -205,9 +204,9 @@ class Supervisor:
             passed = bool(reboot_event_found and status_ok)
 
             print(
-                f"[burn-in] round {round_no} passed={passed} "
-                f"event={reboot_event_found} status_changed={status_changed} "
-                f"diff={status_diff} recover={recover_time:.1f}s error={error}",
+                f"[拷机] 第 {round_no} 轮 通过={passed} "
+                f"事件={reboot_event_found} 状态偏移={status_changed} "
+                f"差异={status_diff} 恢复耗时={recover_time:.1f}秒 错误={error}",
                 flush=True,
             )
 

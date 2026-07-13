@@ -105,7 +105,7 @@ class Coordinator(Agent):
         if message.get("ok") is not True:
             # 重启失败：设备不会再 recovered，本轮直接判失败并收尾。
             self._round["t_recover"] = None
-            self._complete_failure(round_no, "reboot failed", message.get("error"))
+            self._complete_failure(round_no, "重启失败", message.get("error"))
 
     async def _on_recovered(self, message: dict) -> None:
         round_no = message.get("round_no")
@@ -134,7 +134,7 @@ class Coordinator(Agent):
         self._aborted = True
         self.ctx.aborted = True
         reason = message.get("reason", "unknown")
-        self.ctx.append_log(f"[coordinator] abort: {reason}")
+        self.ctx.append_log(f"[协调者] 中止: {reason}")
         if self._round_done_event is not None:
             self._round_done_event.set()
 
@@ -212,17 +212,23 @@ class Coordinator(Agent):
         self.ctx.board.mark(f"round/{round_no}", "done", record)
         self.ctx.record_round(record)
 
-        tag = "OK" if passed else "FAIL"
+        tag = "通过" if passed else "失败"
+        ts = time.strftime("%H:%M:%S", time.localtime())
+        rt_str = (
+            f"{recover_time:.1f}秒"
+            if isinstance(recover_time, (int, float))
+            else "NA"
+        )
         print(
-            f"[burn-in] round {round_no} {tag} "
-            f"found={found} changed={changed} "
-            f"recover_time={recover_time if recover_time is not None else 'NA':.1f} "
-            f"total_failures={self.total_failures} "
-            f"consecutive_failures={self.consecutive_failures}"
+            f"[{ts}] [拷机] 第 {round_no} 轮 {tag} "
+            f"事件={found} 状态偏移={changed} "
+            f"恢复耗时={rt_str} "
+            f"累计失败={self.total_failures} "
+            f"连续失败={self.consecutive_failures}"
         )
         self.ctx.append_log(
-            f"[burn-in] round {round_no} {tag} "
-            f"total_failures={self.total_failures}"
+            f"[拷机] 第 {round_no} 轮 {tag} "
+            f"累计失败={self.total_failures}"
         )
 
         # 回报 ReporterAgent 做汇总。
@@ -231,13 +237,13 @@ class Coordinator(Agent):
         # 检查中止阈值。
         if self.total_failures >= self.fail_threshold:
             await self._abort(
-                f"total_failures {self.total_failures} >= {self.fail_threshold}"
+                f"累计失败 {self.total_failures} >= 阈值 {self.fail_threshold}"
             )
             return
         if self.consecutive_failures >= self.fail_consecutive:
             await self._abort(
-                f"consecutive_failures {self.consecutive_failures} "
-                f">= {self.fail_consecutive}"
+                f"连续失败 {self.consecutive_failures} "
+                f">= 上限 {self.fail_consecutive}"
             )
             return
 
@@ -273,8 +279,9 @@ class Coordinator(Agent):
         }
         self.ctx.board.mark(f"round/{round_no}", "failed", record)
         self.ctx.record_round(record)
-        self.ctx.append_log(f"[burn-in] round {round_no} FAILED: {reason}")
-        print(f"[burn-in] round {round_no} FAILED: {reason}")
+        self.ctx.append_log(f"[拷机] 第 {round_no} 轮 失败: {reason}")
+        ts = time.strftime("%H:%M:%S", time.localtime())
+        print(f"[{ts}] [拷机] 第 {round_no} 轮 失败: {reason}")
 
         asyncio.create_task(self._publish_and_check_abort(record))
 
@@ -282,13 +289,13 @@ class Coordinator(Agent):
         await self.publish(self.ROUND_DONE_TOPIC, record)
         if self.total_failures >= self.fail_threshold:
             await self._abort(
-                f"total_failures {self.total_failures} >= {self.fail_threshold}"
+                f"累计失败 {self.total_failures} >= 阈值 {self.fail_threshold}"
             )
             return
         if self.consecutive_failures >= self.fail_consecutive:
             await self._abort(
-                f"consecutive_failures {self.consecutive_failures} "
-                f">= {self.fail_consecutive}"
+                f"连续失败 {self.consecutive_failures} "
+                f">= 上限 {self.fail_consecutive}"
             )
             return
         if self._round_done_event is not None:
@@ -320,13 +327,13 @@ class Coordinator(Agent):
         if decision is not None and decision.get("continue") is False:
             # 策略层（人或 LLM 代理）判断应停机：中止整个拷机。
             await self._abort(
-                f"analyst stop: {decision.get('reason', 'no recovery')}"
+                f"分析智能体叫停: {decision.get('reason', '设备未恢复')}"
             )
             return
 
         # Analyst 建议继续，或 Analyst 不可用（确定性降级）：照常记失败 + 阈值检查。
         self._complete_failure(
-            round_no, "device did not recover (possible power loss)", "no recovery"
+            round_no, "设备未恢复（疑似断电）", "未恢复"
         )
 
     async def _consult_analyst(self, incident: dict) -> dict | None:
@@ -341,7 +348,7 @@ class Coordinator(Agent):
             )
         except Exception:  # noqa: BLE001 - 含 TimeoutError / 无订阅者等情况
             self.ctx.append_log(
-                "[coordinator] analyst advise unavailable; fallback to deterministic"
+                "[协调者] 分析智能体不可用，回退确定性决策"
             )
             return None
 
@@ -384,7 +391,7 @@ class Coordinator(Agent):
         self.subscribe(self.STATUS_TOPIC, self._on_status)
         self.subscribe(self.ABORT_TOPIC, self._on_abort)
 
-        self.ctx.append_log("[coordinator] run started")
+        self.ctx.append_log("[协调者] 运行开始")
 
         while not self._aborted:
             # 终止：达到最大轮次。
@@ -392,7 +399,7 @@ class Coordinator(Agent):
                 break
             # 终止：超过最大运行时长。
             if self.max_duration > 0 and (time.time() - self._start_time) > self.max_duration:
-                self.ctx.append_log("[coordinator] max_duration reached")
+                self.ctx.append_log("[协调者] 已达最大运行时长")
                 break
 
             # 启动新一轮（保证上一轮 round/done 已收才发新 reboot）。
@@ -409,11 +416,11 @@ class Coordinator(Agent):
             # 自适应冷却后再发下一轮。
             interval = self._compute_interval()
             self.ctx.append_log(
-                f"[coordinator] sleep {interval:.1f}s before next round"
+                f"[协调者] 下一轮前冷却 {interval:.1f} 秒"
             )
             await asyncio.sleep(interval)
 
-        self.ctx.append_log("[coordinator] run finished")
+        self.ctx.append_log("[协调者] 运行结束")
 
 
 if __name__ == "__main__":
@@ -438,5 +445,5 @@ if __name__ == "__main__":
         host=cfg.host,
     )
     coord = Coordinator(spec, bus, ctx, cfg=cfg)
-    print("Coordinator ready; asyncio.run(coordinator.run()) to drive.")
+    print("协调者就绪；执行 asyncio.run(coordinator.run()) 即可驱动。")
     asyncio.run(coord.run())

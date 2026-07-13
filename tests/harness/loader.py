@@ -20,6 +20,7 @@ import asyncio
 import importlib.util
 import os
 import sys
+import time
 
 # 让 loader 既能解析 harness 内的模块（bus/agent/context），也能解析 agents/ 下的
 # device_client / strategy / config / report。harness 在前，agents 在后（不抢前）。
@@ -99,7 +100,7 @@ def build_system(cfg) -> tuple:
         ctx.set_baseline(snapshot)
     except Exception as exc:  # noqa: BLE001 - 装配阶段不阻塞，仅留日志
         ctx.set_baseline({})
-        ctx.append_log(f"build_system baseline capture failed: {exc}")
+        ctx.append_log(f"系统装配：基线抓取失败: {exc}")
 
     host = cfg.host
 
@@ -147,9 +148,10 @@ def build_system(cfg) -> tuple:
     ]
 
     # 体现“可寻址”：打印各 agent 的 endpoint。
-    print("[build_system] assembled agents and their endpoints:")
+    ts = time.strftime("%H:%M:%S", time.localtime())
+    print(f"[{ts}] [系统装配] 已装配的智能体及其端点:")
     for a in agents:
-        print(f"  - {a.spec.role:12s} -> {a.spec.endpoint or '(no endpoint)'}")
+        print(f"  - {a.spec.role:12s} -> {a.spec.endpoint or '(无端点)'}")
 
     return bus, ctx, agents
 
@@ -160,6 +162,6 @@ if __name__ == "__main__":
     cfg = load_config_from_env()
     bus, ctx, agents = build_system(cfg)
     print(
-        f"context: strategy={ctx.strategy_text!r} "
-        f"baseline_keys={list(ctx.baseline.keys())}"
+        f"上下文: 策略={ctx.strategy_text!r} "
+        f"基线键={list(ctx.baseline.keys())}"
     )

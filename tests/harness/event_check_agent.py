@@ -127,7 +127,7 @@ class EventCheckAgent(Agent):
                 return {
                     "round_no": round_no,
                     "found": False,
-                    "error": "missing t_reboot in message",
+                    "error": "消息中缺少 t_reboot",
                 }
             t_reboot = float(t_reboot)
             t_recover = float(t_recover) if t_recover is not None else t_reboot
@@ -198,14 +198,14 @@ if __name__ == "__main__":
     async def _demo() -> None:
         # 演示：监听结果并打印
         async def _on_result(msg: dict) -> None:
-            print("[check/event]", json.dumps(msg, ensure_ascii=False))
+            print("[事件核对]", json.dumps(msg, ensure_ascii=False))
 
         bus.subscribe("check/event", _on_result)
         await agent.run()
 
     print(
-        f"EventCheckAgent 就绪：订阅 {EventCheckAgent.RECOVERED_TOPIC} -> "
-        f"发布 {EventCheckAgent.RESULT_TOPIC}（window={cfg.event_window}s）。"
+        f"事件核对智能体就绪：订阅 {EventCheckAgent.RECOVERED_TOPIC} -> "
+        f"发布 {EventCheckAgent.RESULT_TOPIC}（窗口={cfg.event_window}秒）。"
     )
     print("按 Ctrl+C 退出。")
     try:

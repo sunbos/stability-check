@@ -65,35 +65,48 @@ class ReporterAgent(Agent):
     async def _on_event(self, message: dict) -> None:
         """处理 check/event：累积事件并落日志。"""
         self.events.append(message)
-        print(f"[reporter] [event] {message}")
-        self.ctx.append_log(f"reporter/event: {message}")
+        ts = time.strftime("%H:%M:%S", time.localtime())
+        print(
+            f"[{ts}] [汇报] [事件] "
+            f"轮次={message.get('round_no')} "
+            f"found={message.get('found')} "
+            f"error={message.get('error')}"
+        )
+        self.ctx.append_log(f"汇报/事件: {message}")
         if message.get("error") or message.get("abnormal"):
-            self.reporter.alert(f"event abnormal: {message}")
+            self.reporter.alert(f"事件异常: {message}")
 
     async def _on_status(self, message: dict) -> None:
         """处理 check/status：累积状态并落日志。"""
         self.statuses.append(message)
-        print(f"[reporter] [status] {message}")
-        self.ctx.append_log(f"reporter/status: {message}")
+        ts = time.strftime("%H:%M:%S", time.localtime())
+        print(
+            f"[{ts}] [汇报] [状态] "
+            f"轮次={message.get('round_no')} "
+            f"changed={message.get('changed')} "
+            f"diff={message.get('diff')} "
+            f"error={message.get('error')}"
+        )
+        self.ctx.append_log(f"汇报/状态: {message}")
         if message.get("error") or message.get("abnormal"):
-            self.reporter.alert(f"status abnormal: {message}")
+            self.reporter.alert(f"状态异常: {message}")
 
     async def _on_event_or_status(self, message: dict) -> None:
         """处理 check/event 与 check/status：累积并落日志。"""
         # 区分事件与状态（消息可能在两种主题间复用结构）
         if message.get("event") is not None or "event_type" in message:
             self.events.append(message)
-            bucket = "event"
+            bucket = "事件"
         else:
             self.statuses.append(message)
-            bucket = "status"
+            bucket = "状态"
 
         line = f"[{bucket}] {message}"
-        print(f"[reporter] {line}")
-        self.ctx.append_log(f"reporter/{bucket}: {message}")
+        print(f"[汇报] {line}")
+        self.ctx.append_log(f"汇报/{bucket}: {message}")
         # 仅在显式标记异常时告警，不主动做任何设备请求
         if message.get("error") or message.get("abnormal"):
-            self.reporter.alert(f"{bucket} abnormal: {message}")
+            self.reporter.alert(f"{bucket}异常: {message}")
 
     async def _on_round_done(self, message: dict) -> None:
         """处理 round/done：记录一轮结果到 ctx 与内部 Reporter。"""
@@ -108,11 +121,11 @@ class ReporterAgent(Agent):
         self.reporter.record(result)
 
         ts = result.get("timestamp") or time.time()
-        print(f"[reporter] round done: round={result.get('round')} "
-              f"passed={result.get('passed')} recover_time={result.get('recover_time')}")
+        # 注：不在控制台重复打印轮次汇总——[拷机] 行已是核心结论，
+        # [分析]/[记录员] 各有补充视角；此处仅落日志供事后复盘。
         self.ctx.append_log(
-            f"reporter/round: round={result.get('round')} "
-            f"passed={result.get('passed')} ts={ts}"
+            f"汇报/轮次: 轮次={result.get('round')} "
+            f"通过={result.get('passed')} 时间戳={ts}"
         )
         # 复位本轮累积，避免跨轮混淆
         self.events.clear()
@@ -122,10 +135,11 @@ class ReporterAgent(Agent):
         """处理 coord/abort：标记中断并告警（预留 webhook）。"""
         reason = message.get("reason", "unknown")
         self.reporter.abort(reason)
-        self.ctx.append_log(f"reporter/abort: {reason}")
+        self.ctx.append_log(f"汇报/中止: {reason}")
         # 告警（Reporter.alert 内部预留 webhook 钩子）
-        self.reporter.alert(f"coord/abort: {reason}")
-        print(f"[reporter] ABORTED: {reason}")
+        self.reporter.alert(f"协调者中止: {reason}")
+        ts = time.strftime("%H:%M:%S", time.localtime())
+        print(f"[{ts}] [汇报] 已中止: {reason}")
 
     # ------------------------------------------------------------------ #
     # 业务 step（保留基类契约，但本 agent 不主动处理输入/设备请求）
@@ -193,7 +207,7 @@ if __name__ == "__main__":
         )
         await bus.publish("coord/abort", {"reason": "manual stop for demo"})
 
-        print("summary:", agent.reporter.summary())
+        print("汇总:", agent.reporter.summary())
         agent.stop()
         await run_task
 

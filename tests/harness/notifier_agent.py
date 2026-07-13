@@ -58,7 +58,7 @@ class NotifierAgent(Agent):
     # ------------------------------------------------------------------ #
     def notify(self, title: str, body: str) -> None:
         """发送一条通知。print 通道直接打印；webhook 通道预留钩子。"""
-        msg = f"[NOTIFY:{self.channel}] {title} | {body}"
+        msg = f"[通知:{self.channel}] {title} | {body}"
         print(msg)
         self.sent.append(msg)
         if self.channel == "webhook":

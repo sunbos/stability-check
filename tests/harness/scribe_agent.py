@@ -1,4 +1,4 @@
-"""ScribeAgent：小组白板“书记员”（仅使用标准库）。
+"""ScribeAgent：小组白板“记录员”（仅使用标准库）。
 
 职责
 ----
@@ -11,7 +11,7 @@
 --------
 Scribe 不发起任何设备请求，也不做决策，只“记录”。它把总线上的分散信号
 （重启、恢复、事件核对、状态核对、分析决策）连成一条连贯的时间线，等价于
-“人不在场时，有一个书记员在实时记录拷机现场”。
+“人不在场时，有一个记录员在实时记录拷机现场”。
 
 仅依赖标准库 + 同仓 bus / agent / context，无第三方依赖。
 """
@@ -31,7 +31,7 @@ from agent import Agent  # noqa: E402
 
 
 class ScribeAgent(Agent):
-    """书记员：把总线信号整理为连贯叙事，供复盘与通知。"""
+    """记录员：把总线信号整理为连贯叙事，供复盘与通知。"""
 
     SUMMARY_TOPIC = "scribe/summary"
     TOPICS = (
@@ -54,15 +54,17 @@ class ScribeAgent(Agent):
         ts = time.strftime("%H:%M:%S", time.localtime())
         entry = f"[{ts}] {text}"
         self.narrative.append(entry)
-        self.ctx.append_log(f"scribe: {text}")
-        print(f"[scribe] {text}")
+        self.ctx.append_log(f"记录员: {text}")
+        print(f"[{ts}] [记录员] {text}")
 
     async def _on_round_done(self, m: dict) -> None:
         r = m.get("round")
-        tag = "OK" if m.get("passed") else "FAIL"
+        tag = "通过" if m.get("passed") else "失败"
+        rt = m.get("recover_time")
+        rt_str = f"{rt:.1f}秒" if isinstance(rt, (int, float)) else "NA"
         self._line(
             f"第 {r} 轮 {tag}：事件={m.get('found')} 状态偏移={m.get('changed')} "
-            f"恢复耗时={m.get('recover_time')}"
+            f"恢复耗时={rt_str}"
         )
 
     async def _on_incident(self, m: dict) -> None:
@@ -97,7 +99,7 @@ class ScribeAgent(Agent):
     # 摘要
     # ------------------------------------------------------------------ #
     def summary(self) -> dict:
-        """产出书记员视角的整体摘要。"""
+        """产出记录员视角的整体摘要。"""
         return {
             "narrative": list(self.narrative),
             "rounds": len(self.ctx.round_history),
@@ -139,7 +141,7 @@ if __name__ == "__main__":
 
     async def _demo():
         async def _on_summary(m):
-            print("[scribe/summary]", m)
+            print("[记录员/摘要]", m)
 
         bus.subscribe("scribe/summary", _on_summary)
         await bus.publish(
