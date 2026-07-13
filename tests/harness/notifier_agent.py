@@ -36,6 +36,7 @@ class NotifierAgent(Agent):
         "coord/abort",
         "analyst/decision",
         "analyst/report",
+        "incident/raise",
         "notify",
     )
 
@@ -91,6 +92,17 @@ class NotifierAgent(Agent):
                 f"{m.get('total')} 建议={m.get('recommendation')}",
             )
 
+    async def _on_incident(self, m: dict) -> None:
+        """Alert on raised incidents (absorbs Reporter alert duty)."""
+        inc = m.get("incident", m)
+        severity = m.get("severity", "info")
+        raised_by = m.get("raised_by", "unknown")
+        description = m.get("description", str(inc))
+        self.notify(
+            f"事故告警 [{severity}]",
+            f"来源={raised_by}：{description}",
+        )
+
     async def _on_notify(self, m: dict) -> None:
         self.notify(m.get("title", "通知"), m.get("body", str(m)))
 
@@ -101,6 +113,7 @@ class NotifierAgent(Agent):
         self.subscribe("coord/abort", self._on_abort)
         self.subscribe("analyst/decision", self._on_decision)
         self.subscribe("analyst/report", self._on_report)
+        self.subscribe("incident/raise", self._on_incident)
         self.subscribe("notify", self._on_notify)
         self._stop = asyncio.Event()
         try:
