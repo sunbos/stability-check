@@ -27,7 +27,6 @@ for _p in (_AGENTS_DIR, _HARNESS_DIR):
 
 from loader import build_system  # noqa: E402
 from coordinator import Coordinator  # noqa: E402
-from reporter_agent import ReporterAgent  # noqa: E402
 from analyst_agent import AnalystAgent  # noqa: E402
 from scribe_agent import ScribeAgent  # noqa: E402
 
@@ -41,7 +40,6 @@ def test_burnin_session(run_config, baseline):
     ctx.baseline_fields = getattr(baseline, "fields", None)
 
     coordinator = next(a for a in agents if isinstance(a, Coordinator))
-    reporter = next(a for a in agents if isinstance(a, ReporterAgent))
     scribe = next(a for a in agents if isinstance(a, ScribeAgent))
 
     async def _drive() -> None:
@@ -61,9 +59,9 @@ def test_burnin_session(run_config, baseline):
 
     asyncio.run(_drive())
 
-    summary = reporter.reporter.summary()
+    summary = scribe.summary()
     _print_summary(summary)
-    _print_narrative(scribe.summary().get("narrative"))
+    _print_narrative(summary.get("narrative"))
 
     assert not ctx.aborted, (
         f"Burn-in aborted by failure threshold: {summary}"
