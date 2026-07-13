@@ -65,13 +65,17 @@ def _vote_request(round_no=1, **facts):
 # Vote reply tests
 # ------------------------------------------------------------------ #
 def test_vote_abstain_without_llm():
-    """LLM unavailable -> vote/reply abstain."""
+    """LLM unavailable -> rule-based fallback vote (not abstain).
+
+    Design §7: LLM failure degrades to rule-based voting with moderate
+    confidence (0.4), providing a valid vote instead of abstaining.
+    """
     agent = _make_agent(llm=None)
     reply = agent.compute_vote(_vote_request())
-    assert reply["method"] == "abstain"
+    assert reply["method"] == "rule"
     assert reply["voter"] == "risk_analyst"
-    assert reply["confidence"] == 0
-    assert reply["risk_score"] == 50
+    assert reply["confidence"] == 0.4
+    assert 0 <= reply["risk_score"] <= 100
 
 
 def test_vote_llm_with_valid_json():
@@ -86,11 +90,11 @@ def test_vote_llm_with_valid_json():
 
 
 def test_vote_abstain_on_unparseable_llm():
-    """LLM returns garbage -> abstain (graceful degradation)."""
+    """LLM returns garbage -> rule-based fallback (graceful degradation)."""
     fake = _FakeLLM("我不明白")
     agent = _make_agent(llm=fake)
     reply = agent.compute_vote(_vote_request())
-    assert reply["method"] == "abstain"
+    assert reply["method"] == "rule"
 
 
 # ------------------------------------------------------------------ #

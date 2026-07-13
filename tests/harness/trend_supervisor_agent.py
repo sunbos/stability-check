@@ -60,7 +60,7 @@ class TrendSupervisorAgent(Agent):
 
     # Window / warmup
     WINDOW_SIZE = 10
-    WARMUP_ROUNDS = 3  # min rounds before voting (below → abstain)
+    WARMUP_ROUNDS = 2  # min rounds before voting (2 samples = 1 trend direction)
 
     # Trend-increment thresholds (consecutive increasing rounds)
     INCR_WARN_STREAK = 3

@@ -141,11 +141,12 @@ class AnalystAgent(Agent):
     def compute_vote(self, vote_request: dict) -> dict:
         """用 LLM 评估风险分（0-100），返回 vote/reply dict（不含 req_id）。
 
-        LLM 不可用 / 响应无法解析 → 弃权（abstain）。设计 §5.3 / §7。
+        LLM 不可用 / 响应无法解析 → 规则兜底投票（rule-based，confidence=0.4）。
+        设计 §5.3 / §7：LLM 失败时不弃权，而是用规则给出有效风险分，确保投票有效。
         """
         llm = self._ensure_llm()
         if llm is None:
-            return self._abstain_reply("LLM 不可用，弃权")
+            return self._rule_based_vote(vote_request, "LLM 不可用")
 
         facts = vote_request.get("facts", {})
         history = vote_request.get("history_summary", {})
@@ -164,17 +165,17 @@ class AnalystAgent(Agent):
         try:
             text = llm.chat(system_prompt, user_prompt, timeout=25.0)
         except Exception:
-            return self._abstain_reply("LLM 调用异常，弃权")
+            return self._rule_based_vote(vote_request, "LLM 调用异常")
         if not text:
-            return self._abstain_reply("LLM 无响应，弃权")
+            return self._rule_based_vote(vote_request, "LLM 无响应")
 
         result = _extract_first_json(text)
         if not result:
-            return self._abstain_reply("LLM 响应无法解析，弃权")
+            return self._rule_based_vote(vote_request, "LLM 响应无法解析")
 
         risk = result.get("risk_score")
         if not isinstance(risk, (int, float)) or not (0 <= risk <= 100):
-            return self._abstain_reply("LLM 风险分无效，弃权")
+            return self._rule_based_vote(vote_request, "LLM 风险分无效")
 
         confidence = result.get("confidence", 0.5)
         if not isinstance(confidence, (int, float)) or not (0 <= confidence <= 1):
@@ -188,9 +189,84 @@ class AnalystAgent(Agent):
             "method": "llm",
         }
 
+    def _rule_based_vote(self, vote_request: dict, reason: str) -> dict:
+        """Rule-based fallback vote when LLM is unavailable (design §7).
+
+        Uses recover_time trend and pass rate from history to estimate risk.
+        Gives moderate confidence (0.4) — less nuanced than LLM, but provides
+        a valid vote instead of abstaining, so the decision matrix has real
+        input from both L3 agents.
+
+        Rules:
+          - Fact failure (found=False / changed=True) → risk=90
+          - Recover time > 120s → +20; > 90s → +10
+          - Recover time > 1.5× historical avg → +15 (spike)
+          - Recover time > 1.2× historical avg → +8 (upward trend)
+          - Fail rate > 30% in recent 3 rounds → +15
+          - Baseline clean pass → risk=30
+        """
+        facts = vote_request.get("facts", {})
+        t_recover = facts.get("t_recover")
+        found = facts.get("found", True)
+        changed = facts.get("changed", False)
+
+        # Fact failures → high risk (defensive; shouldn't reach here on clean pass)
+        if not found or changed:
+            return {
+                "voter": "risk_analyst",
+                "risk_score": 90,
+                "rationale": f"规则兜底({reason}): 事实层失败",
+                "confidence": 0.4,
+                "method": "rule",
+            }
+
+        risk = 30  # baseline: clean pass with normal recover time
+
+        # Recover time absolute value
+        if isinstance(t_recover, (int, float)):
+            if t_recover > 120:
+                risk += 20
+            elif t_recover > 90:
+                risk += 10
+
+        # Recover time trend vs history
+        recent = self._short_history(5)
+        recover_times = [
+            r.get("recover_time")
+            for r in recent
+            if r.get("recover_time") is not None
+        ]
+        if len(recover_times) >= 1 and isinstance(t_recover, (int, float)):
+            avg = sum(recover_times) / len(recover_times)
+            if avg > 0:
+                if t_recover > avg * 1.5:
+                    risk += 15  # spike
+                elif t_recover > avg * 1.2:
+                    risk += 8   # upward trend
+
+        # Recent fail rate
+        if len(recent) >= 2:
+            recent_passes = sum(1 for r in recent[-3:] if r.get("passed", False))
+            recent_total = min(3, len(recent))
+            if recent_total > 0 and recent_passes < recent_total * 0.7:
+                risk += 15  # degraded pass rate
+
+        risk = max(0, min(100, risk))
+        return {
+            "voter": "risk_analyst",
+            "risk_score": risk,
+            "rationale": f"规则兜底({reason}): 恢复={t_recover}s 历史={len(recent)}轮",
+            "confidence": 0.4,
+            "method": "rule",
+        }
+
     @staticmethod
     def _abstain_reply(reason: str = "弃权") -> dict:
-        """Build an abstain vote reply (LLM unavailable / unparseable)."""
+        """Build an abstain vote reply (kept for backward compat / tests).
+
+        New code uses _rule_based_vote instead; abstain is only for edge cases
+        where even rule-based voting is impossible.
+        """
         return {
             "voter": "risk_analyst",
             "risk_score": 50,
@@ -211,8 +287,8 @@ class AnalystAgent(Agent):
         loop = asyncio.get_event_loop()
         try:
             reply = await loop.run_in_executor(None, self.compute_vote, message)
-        except Exception:  # noqa: BLE001 - LLM 异常时弃权
-            reply = self._abstain_reply("LLM 调用异常，弃权")
+        except Exception:  # noqa: BLE001 - LLM 异常时规则兜底
+            reply = self._rule_based_vote(message, "LLM 执行异常")
 
         reply["req_id"] = message.get("req_id")
 
