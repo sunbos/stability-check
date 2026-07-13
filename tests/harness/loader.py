@@ -16,7 +16,6 @@ agents/ 推到 sys.path 前部造成遮蔽。这里用 importlib 按显式文件
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import os
 import sys

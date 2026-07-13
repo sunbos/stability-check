@@ -230,7 +230,7 @@ class Coordinator(Agent):
             f"累计失败={self.total_failures}"
         )
 
-        # 回报 ReporterAgent 做汇总。
+        # 广播给观察者（Scribe/Notifier）做记录。
         await self.publish(self.ROUND_DONE_TOPIC, record)
         # Broadcast state snapshot so autonomous agents can refresh their views.
         await self.ctx.publish_state(self.bus)
@@ -255,7 +255,7 @@ class Coordinator(Agent):
     def _complete_failure(self, round_no, reason: str, error=None) -> None:
         """重启失败 / 无 recovered 等无法走正常核对路径时的收尾。
 
-        直接作为失败轮结束，并发布 'round/done' 供 ReporterAgent 记录。
+        直接作为失败轮结束，并发布 'round/done' 供 Scribe 记录。
         """
         self.total_failures += 1
         self.consecutive_failures += 1

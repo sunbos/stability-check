@@ -3,7 +3,7 @@
 职责
 ----
 * 订阅需要“让人知道”的事件：coord/abort（中止）、analyst/decision（分析决策）、
-  analyst/report（带失败的分析）、notify（通用通知主题），以及 ReporterAgent 的告警。
+  analyst/report（带失败的分析）、incident/raise（事故）、notify（通用通知主题）。
 * 通过可插拔 channel 发送通知：默认仅打印 + 预留 webhook 钩子（不在 MVP 真实发送）。
   channel 可通过 config.notifier_channel 选择（如 'print' / 'webhook'）。
 
