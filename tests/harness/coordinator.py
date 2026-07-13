@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 import sys
 import time
 
@@ -43,8 +44,16 @@ class Coordinator(Agent):
     ROUND_DONE_TOPIC = "round/done"
     # 事故 / 分析决策（策略层）：无恢复（疑似断电）时请求 Analyst 是否继续。
     INCIDENT_TOPIC = "incident/raise"
+    INCIDENT_ACK_TOPIC = "incident/ack"
     ADVISE_TOPIC = "analyst/advise"
     ADVISE_TIMEOUT = 35.0  # 须大于 Analyst 的 LLM 调用耗时（~25s），否则会误降级
+    # Vote 机制（设计 §5.3）：Coordinator 广播 vote/request，收集 vote/reply。
+    VOTE_REQUEST_TOPIC = "vote/request"
+    VOTE_REPLY_TOPIC = "vote/reply"
+    # Recheck 触发（设计 §5.4）：高风险/critical 时强制重检。
+    RECHECK_TOPIC = "coord/recheck"
+    # 投票者权重（设计 §5.3）：两个自治层 agent 等权。
+    WEIGHTS = {"trend_supervisor": 0.5, "risk_analyst": 0.5}
 
     def __init__(self, spec, bus: EventBus, ctx: RunContext, cfg=None) -> None:
         super().__init__(spec, bus, ctx)
@@ -62,6 +71,12 @@ class Coordinator(Agent):
         self._round_done_event: asyncio.Event | None = None
         self._round = self._new_round_state()
         # CoordinatorContext.aborted 默认 False，无需在此重复设置。
+
+        # ---- 决策矩阵状态（设计 §5.2 / §5.4）----
+        # 跟踪未处理的 critical 事故，供决策矩阵强制 recheck。
+        self._has_critical_incident: bool = False
+        # 最近一次综合风险分（供 _should_ack_incident 使用）。
+        self._last_risk_score: int = 50
 
         # ---- 配置（缺失时回退默认值，保持可独立运行）----
         c = self.cfg
@@ -356,6 +371,183 @@ class Coordinator(Agent):
             return None
 
     # ------------------------------------------------------------------ #
+    # 决策矩阵：投票综合 + 事实/风险决策 + 事故 ack（设计 §5.2/§5.3/§5.4）
+    # ------------------------------------------------------------------ #
+    def _combine_votes(self, replies: list) -> dict:
+        """综合投票回复为单一风险评估（设计 §5.3）。
+
+        使用 confidence × voter_weight 加权平均。返回：
+        - 无回复 → {"risk_score": 50, "method": "default", "voters": []}
+        - 全部弃权（confidence=0）→ {"risk_score": 50, "method": "all_abstain", "voters": [...]}
+        - 正常加权 → {"risk_score": <int>, "method": "weighted", "voters": [...]}
+        """
+        if not replies:
+            return {"risk_score": 50, "method": "default", "voters": []}
+
+        total_weight_conf = 0.0
+        weighted_sum = 0.0
+        voters: list = []
+        for r in replies:
+            voter = r.get("voter", "unknown")
+            risk = r.get("risk_score", 50)
+            conf = float(r.get("confidence", 0.0))
+            weight = self.WEIGHTS.get(voter, 0.0)
+            wc = weight * conf
+            total_weight_conf += wc
+            weighted_sum += risk * wc
+            voters.append(voter)
+
+        if total_weight_conf == 0:
+            return {"risk_score": 50, "method": "all_abstain", "voters": voters}
+
+        risk_score = round(weighted_sum / total_weight_conf)
+        return {"risk_score": risk_score, "method": "weighted", "voters": voters}
+
+    def _apply_decision_matrix(
+        self,
+        found: bool,
+        changed: bool,
+        risk_score: int,
+        has_critical: bool,
+    ) -> str:
+        """应用决策矩阵确定本轮结果（设计 §5.4）。
+
+        事实层独裁（安全底线）：found=False 或 changed=True → "fail"。
+        风险分修饰通过决策：<60→pass, 60-80→warn, >80→recheck。
+        Critical 事故强制 recheck（无论风险分）。
+        安全保证：风险分绝不能把 fail 改成 pass。
+        """
+        # 事实层独裁（安全底线）
+        if not found or changed:
+            return "fail"
+        # Critical 事故强制 recheck
+        if has_critical:
+            return "recheck"
+        # 风险修饰决策
+        if risk_score > 80:
+            return "recheck"
+        if risk_score >= 60:
+            return "warn"
+        return "pass"
+
+    def _should_ack_incident(self, incident: dict, current_risk: int) -> dict:
+        """决定如何确认事故（设计 §5.2）。
+
+        返回 {"decision": str, "action": str, "reason": str}：
+        - critical → accepted + coord/recheck
+        - warn + risk>60 → accepted + coord/recheck
+        - warn + risk<=60 → logged + none
+        - info → logged + none
+        """
+        severity = (incident.get("severity") or "info").lower()
+        if severity == "critical":
+            return {
+                "decision": "accepted",
+                "action": "coord/recheck",
+                "reason": "Critical incident requires immediate recheck",
+            }
+        if severity == "warn" and current_risk > 60:
+            return {
+                "decision": "accepted",
+                "action": "coord/recheck",
+                "reason": (
+                    f"Warn incident with elevated risk ({current_risk})"
+                    " triggers recheck"
+                ),
+            }
+        return {
+            "decision": "logged",
+            "action": "none",
+            "reason": "Incident logged but no action required",
+        }
+
+    async def _collect_votes(
+        self, round_no: int, facts: dict, timeout: float = 5.0
+    ) -> dict:
+        """广播 vote/request 并收集 vote/reply（设计 §5.3）。
+
+        按 req_id 过滤回复，超时后回退到默认中性风险（50）。
+        无投票者时 method="default"；全部弃权时 method="all_abstain"。
+        """
+        req_id = secrets.token_hex(8)
+        replies: list = []
+
+        async def _vote_handler(msg: dict) -> None:
+            if msg.get("req_id") == req_id:
+                replies.append(msg)
+
+        self.bus.subscribe(self.VOTE_REPLY_TOPIC, _vote_handler)
+        try:
+            await self.bus.publish(
+                self.VOTE_REQUEST_TOPIC,
+                {
+                    "round_no": round_no,
+                    "facts": facts,
+                    "req_id": req_id,
+                    "history_summary": {},
+                },
+            )
+            # 收集回复：无回复时等待完整超时；有回复后等待短暂静默期再退出。
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + timeout
+            last_count = 0
+            last_change = loop.time()
+            while loop.time() < deadline:
+                await asyncio.sleep(0.02)
+                now = loop.time()
+                if len(replies) > last_count:
+                    last_count = len(replies)
+                    last_change = now
+                elif replies and (now - last_change) >= 0.05:
+                    break
+        finally:
+            self.bus.unsubscribe(self.VOTE_REPLY_TOPIC, _vote_handler)
+
+        return self._combine_votes(replies)
+
+    async def _on_incident(self, message: dict) -> None:
+        """处理 incident/raise：按决策矩阵 ack 并跟踪 critical（设计 §5.2）。
+
+        Coordinator 必须确认每个事故（强制回声），但不 ack 自己 raise 的
+        （raised_by == "coordinator"）。
+        """
+        # 兼容两种消息格式：直接 incident dict 或 {"incident": {...}} 包装。
+        incident = message if "severity" in message else message.get("incident", message)
+        raised_by = incident.get("raised_by", "")
+
+        # 不 ack 自己 raise 的事故（设计 §5.2 强制回声规则）。
+        if raised_by == "coordinator":
+            return
+
+        severity = (incident.get("severity") or "info").lower()
+        # 跟踪 critical 事故，供决策矩阵强制 recheck。
+        if severity == "critical":
+            self._has_critical_incident = True
+
+        ack = self._should_ack_incident(incident, self._last_risk_score)
+        await self.publish(
+            self.INCIDENT_ACK_TOPIC,
+            {
+                "incident_id": incident.get("incident_id"),
+                "ack_decision": ack["decision"],
+                "ack_action": ack["action"],
+                "ack_reason": ack["reason"],
+                "ack_by": "coordinator",
+            },
+        )
+
+        # 若 action 为 recheck，触发重检信号。
+        if ack["action"] == self.RECHECK_TOPIC:
+            await self.publish(
+                self.RECHECK_TOPIC,
+                {
+                    "round_no": self.round_no,
+                    "trigger": "incident",
+                    "incident_id": incident.get("incident_id"),
+                },
+            )
+
+    # ------------------------------------------------------------------ #
     # 单轮驱动
     # ------------------------------------------------------------------ #
     async def _start_round(self, round_no: int) -> None:
@@ -393,6 +585,8 @@ class Coordinator(Agent):
         self.subscribe(self.EVENT_TOPIC, self._on_event)
         self.subscribe(self.STATUS_TOPIC, self._on_status)
         self.subscribe(self.ABORT_TOPIC, self._on_abort)
+        # 订阅事故（设计 §5.2）：接收自治层 agent 的 incident/raise 并 ack。
+        self.subscribe(self.INCIDENT_TOPIC, self._on_incident)
 
         self.ctx.append_log("[协调者] 运行开始")
 
