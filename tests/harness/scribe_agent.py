@@ -1,17 +1,17 @@
-"""ScribeAgent：小组白板“记录员”（仅使用标准库）。
+"""ScribeAgent：记录员（仅使用标准库）。
 
 职责
 ----
 * 作为总线观察者，把各 agent 的关键消息整理成**面向人**的叙事（narrative），
-  写入 ctx.log 并维护自身 narrative 列表，便于事后复盘。
+  并维护私有 timeline 累积每轮记录。
 * 订阅：round/done、incident/raise、analyst/decision、analyst/report、coord/abort。
-* 在 coord/abort 或 scribe/summary 请求时，广播一份整体摘要（scribe/summary）。
+* summary() 从私有 timeline 计算，不读 ctx.round_history。
 
 设计说明
 --------
-Scribe 不发起任何设备请求，也不做决策，只“记录”。它把总线上的分散信号
-（重启、恢复、事件核对、状态核对、分析决策）连成一条连贯的时间线，等价于
-“人不在场时，有一个记录员在实时记录拷机现场”。
+Scribe 不发起任何设备请求，也不做决策，只"记录"。它把总线上的分散信号
+连成一条连贯的时间线。Phase 3 起，Scribe 维护私有 timeline 和 _aborted 标志，
+不再依赖 ctx 的可变状态，符合"私有状态"原则。
 
 仅依赖标准库 + 同仓 bus / agent / context，无第三方依赖。
 """
@@ -31,7 +31,7 @@ from agent import Agent  # noqa: E402
 
 
 class ScribeAgent(Agent):
-    """记录员：把总线信号整理为连贯叙事，供复盘与通知。"""
+    """记录员：私有 timeline 累积 + 叙事，summary() 不读 ctx。"""
 
     SUMMARY_TOPIC = "scribe/summary"
     TOPICS = (
@@ -46,6 +46,9 @@ class ScribeAgent(Agent):
         super().__init__(spec, bus, ctx)
         self.cfg = cfg if cfg is not None else getattr(ctx, "cfg", None)
         self.narrative: list = []
+        self.timeline: list = []          # private round records
+        self._aborted: bool = False       # private abort flag
+        self._abort_reason: str = ""
 
     # ------------------------------------------------------------------ #
     # 叙事记录
@@ -58,6 +61,8 @@ class ScribeAgent(Agent):
         print(f"[{ts}] [记录员] {text}")
 
     async def _on_round_done(self, m: dict) -> None:
+        record = dict(m)
+        self.timeline.append(record)
         r = m.get("round")
         tag = "通过" if m.get("passed") else "失败"
         rt = m.get("recover_time")
@@ -79,7 +84,6 @@ class ScribeAgent(Agent):
         )
 
     async def _on_report(self, m: dict) -> None:
-        # 多角度分析较频繁，仅在稳定性评分下降或失败时记录，避免刷屏。
         if m.get("failed"):
             self._line(
                 f"稳定性评分={m.get('stability_score')} 失败={m.get('failed')}/"
@@ -87,8 +91,9 @@ class ScribeAgent(Agent):
             )
 
     async def _on_abort(self, m: dict) -> None:
+        self._aborted = True
+        self._abort_reason = m.get("reason", "unknown")
         self._line(f"拷机中止：{m.get('reason')}")
-        # 中止时主动产出整体摘要。
         await self._emit_summary()
 
     async def _emit_summary(self) -> None:
@@ -96,19 +101,34 @@ class ScribeAgent(Agent):
         await self.publish(self.SUMMARY_TOPIC, summary)
 
     # ------------------------------------------------------------------ #
-    # 摘要
+    # 摘要（从私有 timeline 计算，不读 ctx）
     # ------------------------------------------------------------------ #
     def summary(self) -> dict:
-        """产出记录员视角的整体摘要。"""
+        """从私有 timeline 计算汇总（不读 ctx）。"""
+        total = len(self.timeline)
+        passed = sum(1 for r in self.timeline if r.get("passed"))
+        failed = total - passed
+        recover_times = [
+            r.get("recover_time")
+            for r in self.timeline
+            if r.get("recover_time") is not None
+        ]
+        avg_recover_time = (
+            sum(recover_times) / len(recover_times) if recover_times else None
+        )
+        max_recover_time = max(recover_times) if recover_times else None
         return {
             "narrative": list(self.narrative),
-            "rounds": len(self.ctx.history()),
-            "aborted": getattr(self.ctx, "aborted", False),
+            "total": total,
+            "passed": passed,
+            "failed": failed,
+            "aborted": self._aborted,
+            "reason": self._abort_reason,
+            "avg_recover_time": round(avg_recover_time, 1) if avg_recover_time is not None else None,
+            "max_recover_time": max_recover_time,
+            "rounds": total,
         }
 
-    # ------------------------------------------------------------------ #
-    # 总线处理
-    # ------------------------------------------------------------------ #
     async def _on_summary_request(self, m: dict) -> None:
         await self._emit_summary()
 
