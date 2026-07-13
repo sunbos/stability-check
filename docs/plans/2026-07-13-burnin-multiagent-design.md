@@ -163,8 +163,9 @@ tests/
 
 ### 8.4 安全约束
 
-- OpenRouter key **只**从环境变量或仓库根 `.env` 读取（`.env` 已加入 `.gitignore`），
-  绝不硬编码、绝不打印、绝不写入日志。
+- LLM key **只**从环境变量或仓库根 `.env` 读取（`.env` 已加入 `.gitignore`），
+  绝不硬编码、绝不打印、绝不写入日志。默认 OpenRouter，可经环境变量切换到任意
+  OpenAI 兼容 API（DeepSeek / Moonshot / 智谱 / Ollama / vLLM 等）。
 - `llm_client.py` 用标准库 `urllib` 实现，无第三方依赖；所有调用 30s 超时，失败静默
   降级。
 - 规则引擎覆盖多场景（断电/网络中断、连续失败、偶发抖动），保证零 LLM 依赖也能可靠
@@ -186,7 +187,7 @@ tests/
     bus.py                 # 进程内异步事件总线（pub/sub + request/response）
     agent.py               # Agent 基类（可独立运行 / 可寻址 / 可单独被驱动）
     context.py             # RunContext + TaskBoard（共享上下文 + 共同清单）
-    llm_client.py          # OpenRouter 客户端（仅 stdlib，key 只来自 env/.env）
+    llm_client.py          # OpenAI 兼容 API 客户端（仅 stdlib，默认 OpenRouter，可切换）
     reboot_agent.py        # 执行重启
     watch_agent.py         # 监视 DOWN→UP 恢复周期
     event_check_agent.py   # 核对重启事件
@@ -194,7 +195,7 @@ tests/
     reporter_agent.py      # 汇总 + 告警
     coordinator.py         # 确定性的 Loop Core（主驱动 + 事故咨询 Analyst）
     analyst_agent.py       # 策略层：LLM 决策 + 规则降级 + 多角度分析
-    scribe_agent.py        # 书记员叙事
+    scribe_agent.py        # 记录员叙事
     notifier_agent.py      # 通知（可插拔通道）
     loader.py              # 依据 RunConfig 装配全部 Agent
 ```

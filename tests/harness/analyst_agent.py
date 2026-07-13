@@ -10,8 +10,8 @@
 * **优雅降级**：无 LLM key（或 LLM 调用失败/超时）时，自动回退到规则引擎
   （rule-based）。规则引擎覆盖“断电/超时”“连续失败”等多种场景，因此即便没有
   网络/密钥，整套拷机依旧可靠运行。
-* LLM 来自 OpenRouter（默认 `tencent/hy3:free`），key **只**来自环境变量/`.env`，
-  绝不被打印或硬编码。
+* LLM 默认来自 OpenRouter（`tencent/hy3:free`），可经环境变量切换到任意 OpenAI 兼容 API。
+  key **只**来自环境变量/`.env`，绝不被打印或硬编码。
 
 通信（只走总线）
 --------------
@@ -102,7 +102,7 @@ class AnalystAgent(Agent):
     # LLM 懒加载
     # ------------------------------------------------------------------ #
     def _ensure_llm(self):
-        """返回 OpenRouterClient 或 None（无 key / 未启用 → 规则降级）。"""
+        """返回 OpenAICompatibleClient 或 None（无 key / 未启用 → 规则降级）。"""
         if self._llm_loaded:
             return self._llm
         self._llm_loaded = True
@@ -300,15 +300,18 @@ class AnalystAgent(Agent):
                 if note:
                     report["llm_note"] = note
         # 打印到控制台，让“多角度分析”在成功轮也可见（否则总线上的报告是静默的）。
+        ts = time.strftime("%H:%M:%S", time.localtime())
+        avg_rt = report.get("avg_recover_time")
+        avg_rt_str = f"{avg_rt:.1f}秒" if isinstance(avg_rt, (int, float)) else "NA"
         print(
-            f"[analyst] 第 {report.get('round')} 轮分析: "
+            f"[{ts}] [分析] 第 {report.get('round')} 轮分析: "
             f"稳定性评分={report.get('stability_score')} "
             f"通过={report.get('passed')}/{report.get('total')} "
-            f"平均恢复={report.get('avg_recover_time')}s "
+            f"平均恢复={avg_rt_str} "
             f"建议={report.get('recommendation')}"
         )
         if report.get("llm_note"):
-            print(f"[analyst] LLM点评: {report['llm_note']}")
+            print(f"[{ts}] [分析] LLM点评: {report['llm_note']}")
         await self.publish(self.REPORT_TOPIC, report)
 
     async def run(self) -> None:
@@ -339,7 +342,7 @@ if __name__ == "__main__":
     async def _demo():
         # 演示：模拟一次断电事故，请求决策。
         async def _on_decision(msg):
-            print("[analyst/decision]", msg)
+            print("[分析决策]", msg)
 
         bus.subscribe("analyst/decision", _on_decision)
         decision = await bus.request(
@@ -347,6 +350,6 @@ if __name__ == "__main__":
             {"incident": {"kind": "no_recovery", "consecutive_failures": 0}},
             timeout=30,
         )
-        print("advise ->", decision)
+        print("决策结果 ->", decision)
 
     asyncio.run(_demo())

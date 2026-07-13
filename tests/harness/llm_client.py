@@ -1,11 +1,18 @@
-"""OpenRouter LLM 客户端（仅使用标准库 urllib / json / os）。
+"""OpenAI 兼容 API 的 LLM 客户端（仅使用标准库 urllib / json / os）。
 
 设计约束（安全）
 --------------
 * API key **只**从环境变量或仓库根目录的 `.env` 读取，**绝不**硬编码、绝不打印。
 * 当没有可用 key 时，`get_client()` 返回 None，调用方据此走规则降级（rule-based）。
-* 模型默认 `tencent/hy3:free`（由用户授权提供），可通过 `OPENROUTER_MODEL` 覆盖。
+* 默认指向 OpenRouter（`tencent/hy3:free`），可通过环境变量切换到任意 OpenAI 兼容 API
+  （OpenRouter / DeepSeek / Moonshot / 智谱 / Ollama / vLLM 等）。
 * 所有请求统一 30s 超时，模型输出做防御式 JSON 解析，解析失败返回 None。
+
+环境变量（优先级递减）
+--------------------
+* ``LLM_API_KEY`` / ``LLM_BASE_URL`` / ``LLM_MODEL`` —— 通用规范名（推荐）
+* ``OPENROUTER_API_KEY`` / ``OPENROUTER_BASE_URL`` / ``OPENROUTER_MODEL`` —— 向后兼容别名
+* 未设置时使用默认值（OpenRouter + tencent/hy3:free）
 
 仅依赖标准库，无第三方依赖。本模块不直接 import bus / agent（保持纯粹、可单测）。
 """
@@ -17,7 +24,7 @@ import os
 import urllib.request
 import urllib.error
 
-# 默认模型（用户提供的 OpenRouter 模型）。
+# 默认指向 OpenRouter（用户授权的免费模型）。可被 LLM_* / OPENROUTER_* 覆盖。
 DEFAULT_MODEL = "tencent/hy3:free"
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
@@ -60,31 +67,49 @@ def _load_dotenv(path: str | None = None) -> None:
 
 
 def _api_key() -> str | None:
-    """读取 OpenRouter key：优先环境变量，其次 .env。返回 None 表示无 key。"""
-    key = os.environ.get("OPENROUTER_API_KEY")
+    """读取 LLM API key：优先 LLM_API_KEY，回退 OPENROUTER_API_KEY，再回退 .env。"""
+    key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
     if key:
         return key
     _load_dotenv()
-    return os.environ.get("OPENROUTER_API_KEY") or None
+    return (
+        os.environ.get("LLM_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY")
+        or None
+    )
 
 
-def get_client() -> "OpenRouterClient | None":
+def get_client() -> "OpenAICompatibleClient | None":
     """构造客户端；无 key 时返回 None（调用方走规则降级）。
+
+    平台切换：设置 ``LLM_BASE_URL`` 即可指向任意 OpenAI 兼容 API。例如：
+      * OpenRouter（默认）: https://openrouter.ai/api/v1
+      * DeepSeek:           https://api.deepseek.com/v1
+      * Moonshot:           https://api.moonshot.cn/v1
+      * 智谱:               https://open.bigmodel.cn/api/paas/v4
+      * 本地 Ollama:        http://localhost:11434/v1
+      * 本地 vLLM:          http://localhost:8000/v1
 
     注意：key 永远不被打印、不被写入日志。
     """
     key = _api_key()
     if not key:
         return None
-    return OpenRouterClient(
-        api_key=key,
-        model=os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL),
-        base_url=os.environ.get("OPENROUTER_BASE_URL", DEFAULT_BASE_URL),
+    model = os.environ.get("LLM_MODEL") or os.environ.get(
+        "OPENROUTER_MODEL", DEFAULT_MODEL
     )
+    base_url = os.environ.get("LLM_BASE_URL") or os.environ.get(
+        "OPENROUTER_BASE_URL", DEFAULT_BASE_URL
+    )
+    return OpenAICompatibleClient(api_key=key, model=model, base_url=base_url)
 
 
-class OpenRouterClient:
-    """极简 OpenRouter chat-completions 客户端（stdlib 实现）。"""
+class OpenAICompatibleClient:
+    """极简 OpenAI 兼容 chat-completions 客户端（stdlib 实现）。
+
+    适用于所有遵循 OpenAI chat-completions 协议的平台（OpenRouter / DeepSeek /
+    Moonshot / 智谱 / Ollama / vLLM 等）。只需配置 ``base_url`` + ``api_key`` + ``model``。
+    """
 
     def __init__(self, api_key: str, model: str, base_url: str) -> None:
         self.api_key = api_key  # 仅保存在内存，绝不外泄
@@ -132,6 +157,10 @@ class OpenRouterClient:
         if not text:
             return None
         return _extract_first_json(text)
+
+
+# 向后兼容别名：旧代码引用 OpenRouterClient 仍可用。
+OpenRouterClient = OpenAICompatibleClient
 
 
 def _extract_first_json(text: str) -> dict | None:

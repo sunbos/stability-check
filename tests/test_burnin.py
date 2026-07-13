@@ -65,12 +65,44 @@ def test_burnin_session(run_config, baseline):
     asyncio.run(_drive())
 
     summary = reporter.reporter.summary()
-    print("Burn-in summary:", summary)
-    print("Scribe narrative:", scribe.summary().get("narrative"))
+    _print_summary(summary)
+    _print_narrative(scribe.summary().get("narrative"))
 
     assert not ctx.aborted, (
         f"Burn-in aborted by failure threshold: {summary}"
     )
+
+
+def _fmt_seconds(value) -> str:
+    """统一时间格式：数值 -> '61.1秒'，None -> 'NA'。"""
+    if isinstance(value, (int, float)):
+        return f"{value:.1f}秒"
+    return "NA"
+
+
+def _print_summary(s: dict) -> None:
+    """以表格化文本打印拷机汇总，替代直接 print(dict)。"""
+    avg = s.get("avg_recover_time")
+    mx = s.get("max_recover_time")
+    print("===== 拷机汇总 =====")
+    print(f"  总轮次: {s.get('total', 0)}")
+    print(f"  通过:   {s.get('passed', 0)}")
+    print(f"  失败:   {s.get('failed', 0)}")
+    print(f"  中止:   {s.get('aborted', False)}")
+    reason = s.get("reason") or ""
+    print(f"  中止原因: {reason if reason else '(无)'}")
+    print(f"  平均恢复: {_fmt_seconds(avg)}")
+    print(f"  最长恢复: {_fmt_seconds(mx)}")
+
+
+def _print_narrative(narrative) -> None:
+    """逐行打印记录员叙事，替代直接 print(list)。"""
+    print("===== 记录员叙事 =====")
+    if not narrative:
+        print("  (无)")
+        return
+    for line in narrative:
+        print(f"  {line}")
 
 
 # --------------------------------------------------------------------------- #
@@ -86,8 +118,11 @@ def test_analyst_rulebased_degradation():
     from context import RunContext
     from agent import AgentSpec
 
-    # 确保无 key：临时清掉环境变量（仅本测试作用域内）。
-    saved = os.environ.pop("OPENROUTER_API_KEY", None)
+    # 确保无 key：临时清掉所有 key 环境变量（仅本测试作用域内）。
+    saved = {
+        k: os.environ.pop(k, None)
+        for k in ("LLM_API_KEY", "OPENROUTER_API_KEY")
+    }
     try:
         bus = EventBus()
         ctx = RunContext()
@@ -95,12 +130,13 @@ def test_analyst_rulebased_degradation():
         agent = AnalystAgent(spec, bus, ctx)
 
         decision = agent.decide({"kind": "no_recovery", "consecutive_failures": 0})
-        print("rule-based decision:", decision)
+        print("规则引擎决策:", decision)
         assert decision["continue"] is False
         assert decision["source"] == "rule"
     finally:
-        if saved is not None:
-            os.environ["OPENROUTER_API_KEY"] = saved
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
 
 
 def test_coordinator_consults_analyst_on_no_recovery():
