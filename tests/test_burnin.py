@@ -17,8 +17,6 @@ import os
 import sys
 import asyncio
 
-import pytest
-
 # 让 tests 顶层模块（agents / harness）可被绝对导入。
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _AGENTS_DIR = os.path.join(_THIS_DIR, "agents")
@@ -29,10 +27,8 @@ for _p in (_AGENTS_DIR, _HARNESS_DIR):
 
 from loader import build_system  # noqa: E402
 from coordinator import Coordinator  # noqa: E402
-from reporter_agent import ReporterAgent  # noqa: E402
 from analyst_agent import AnalystAgent  # noqa: E402
 from scribe_agent import ScribeAgent  # noqa: E402
-from notifier_agent import NotifierAgent  # noqa: E402
 
 
 def test_burnin_session(run_config, baseline):
@@ -44,7 +40,6 @@ def test_burnin_session(run_config, baseline):
     ctx.baseline_fields = getattr(baseline, "fields", None)
 
     coordinator = next(a for a in agents if isinstance(a, Coordinator))
-    reporter = next(a for a in agents if isinstance(a, ReporterAgent))
     scribe = next(a for a in agents if isinstance(a, ScribeAgent))
 
     async def _drive() -> None:
@@ -64,9 +59,9 @@ def test_burnin_session(run_config, baseline):
 
     asyncio.run(_drive())
 
-    summary = reporter.reporter.summary()
+    summary = scribe.summary()
     _print_summary(summary)
-    _print_narrative(scribe.summary().get("narrative"))
+    _print_narrative(summary.get("narrative"))
 
     assert not ctx.aborted, (
         f"Burn-in aborted by failure threshold: {summary}"
@@ -115,7 +110,7 @@ def test_analyst_rulebased_degradation():
     整套拷机不会因缺 LLM 而失能。
     """
     from bus import EventBus
-    from context import RunContext
+    from context import CoordinatorContext
     from agent import AgentSpec
 
     # 确保无 key：临时清掉所有 key 环境变量（仅本测试作用域内）。
@@ -125,7 +120,7 @@ def test_analyst_rulebased_degradation():
     }
     try:
         bus = EventBus()
-        ctx = RunContext()
+        ctx = CoordinatorContext()
         spec = AgentSpec("analyst", "analyst", "", "admin", "x", "192.168.3.33")
         agent = AnalystAgent(spec, bus, ctx)
 
@@ -147,7 +142,7 @@ def test_coordinator_consults_analyst_on_no_recovery():
     确定性降级（照常记失败，不卡死）。
     """
     from bus import EventBus
-    from context import RunContext
+    from context import CoordinatorContext
     from agent import AgentSpec
     from config import RunConfig
 
@@ -157,7 +152,7 @@ def test_coordinator_consults_analyst_on_no_recovery():
         max_rounds=0, recover_timeout=5, fail_threshold=5, fail_consecutive=3,
     )
     bus = EventBus()
-    ctx = RunContext()
+    ctx = CoordinatorContext()
     ctx.cfg = cfg
 
     coord_spec = AgentSpec("coordinator", "coordinator", "", "admin", "x", "192.168.3.33")
@@ -179,7 +174,7 @@ def test_coordinator_consults_analyst_on_no_recovery():
         coordinator._start_time = 0.0
         coordinator._round_done_event = asyncio.Event()
         coordinator._aborted = False
-        coordinator.ctx.aborted = False
+        # ctx.aborted 由 CoordinatorContext 初始化为 False，无需重置
         coordinator.round_no = 1  # 模拟 run() 主循环已推进到本轮
         coordinator._round["round_no"] = 1
         coordinator.subscribe("reboot/done", coordinator._on_reboot_done)
@@ -203,7 +198,7 @@ def test_coordinator_consults_analyst_on_no_recovery():
 
     # ---- 场景 B：无 Analyst 在线 → 确定性降级，照常记失败且不卡死 ----
     bus2 = EventBus()
-    ctx2 = RunContext()
+    ctx2 = CoordinatorContext()
     ctx2.cfg = cfg
     coordinator2 = Coordinator(coord_spec, bus2, ctx2, cfg=cfg)
 
@@ -211,7 +206,7 @@ def test_coordinator_consults_analyst_on_no_recovery():
         coordinator2._start_time = 0.0
         coordinator2._round_done_event = asyncio.Event()
         coordinator2._aborted = False
-        coordinator2.ctx.aborted = False
+        # ctx.aborted 由 CoordinatorContext 初始化为 False，无需重置
         coordinator2.round_no = 1  # 模拟 run() 主循环已推进到本轮
         coordinator2._round["round_no"] = 1
         coordinator2.subscribe("reboot/done", coordinator2._on_reboot_done)

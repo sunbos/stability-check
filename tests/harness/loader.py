@@ -6,7 +6,8 @@ build_system(cfg) -> (EventBus, RunContext, list[Agent])
   - EventBus：所有 agent 唯一的通信通道。
   - RunContext：共享上下文（strategy_text 已填；baseline 尽力抓一次，可被调用方覆盖）
   - list[Agent]：RebootAgent / WatchAgent / EventCheckAgent / StatusCheckAgent /
-    ReporterAgent / Coordinator（顺序即订阅/启动顺序）。
+    Coordinator / AnalystAgent / ScribeAgent / NotifierAgent / TrendSupervisorAgent
+    （顺序即订阅/启动顺序）。
   - 打印各 agent 的 endpoint，体现“可寻址”。
 
 注意：harness/ 与 agents/ 下存在同名 agent 模块，且部分 harness 模块会把
@@ -16,7 +17,6 @@ agents/ 推到 sys.path 前部造成遮蔽。这里用 importlib 按显式文件
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import os
 import sys
@@ -55,21 +55,21 @@ _reboot_mod = _load_harness("reboot_agent")
 _watch_mod = _load_harness("watch_agent")
 _event_mod = _load_harness("event_check_agent")
 _status_mod = _load_harness("status_check_agent")
-_reporter_mod = _load_harness("reporter_agent")
 _coordinator_mod = _load_harness("coordinator")
 _analyst_mod = _load_harness("analyst_agent")
 _scribe_mod = _load_harness("scribe_agent")
 _notifier_mod = _load_harness("notifier_agent")
+_trend_mod = _load_harness("trend_supervisor_agent")
 
 RebootAgent = _reboot_mod.RebootAgent
 WatchAgent = _watch_mod.WatchAgent
 EventCheckAgent = _event_mod.EventCheckAgent
 StatusCheckAgent = _status_mod.StatusCheckAgent
-ReporterAgent = _reporter_mod.ReporterAgent
 Coordinator = _coordinator_mod.Coordinator
 AnalystAgent = _analyst_mod.AnalystAgent
 ScribeAgent = _scribe_mod.ScribeAgent
 NotifierAgent = _notifier_mod.NotifierAgent
+TrendSupervisorAgent = _trend_mod.TrendSupervisorAgent
 
 
 def _isapi(host: str, path: str) -> str:
@@ -126,25 +126,25 @@ def build_system(cfg) -> tuple:
     status_spec = _spec(
         "status", "status", _isapi(host, "/ISAPI/AccessControl/AcsWorkStatus")
     )
-    reporter_spec = _spec("reporter", "reporter", "")
     coord_spec = _spec("coordinator", "coordinator", "")
     analyst_spec = _spec("analyst", "analyst", "")
     scribe_spec = _spec("scribe", "scribe", "")
     notifier_spec = _spec("notifier", "notifier", "")
+    trend_spec = _spec("trend_supervisor", "trend_supervisor", "")
 
     reboot = RebootAgent(reboot_spec, bus, ctx)
     watch = WatchAgent(watch_spec, bus, ctx)
     event = EventCheckAgent(event_spec, bus, ctx)
     status = StatusCheckAgent(status_spec, bus, ctx)
-    reporter = ReporterAgent(reporter_spec, bus, ctx)
     coordinator = Coordinator(coord_spec, bus, ctx, cfg=cfg)
     analyst = AnalystAgent(analyst_spec, bus, ctx, cfg=cfg)
     scribe = ScribeAgent(scribe_spec, bus, ctx, cfg=cfg)
     notifier = NotifierAgent(notifier_spec, bus, ctx, cfg=cfg)
+    trend = TrendSupervisorAgent(trend_spec, bus, ctx, cfg=cfg)
 
     agents = [
-        reboot, watch, event, status, reporter,
-        coordinator, analyst, scribe, notifier,
+        reboot, watch, event, status,
+        coordinator, analyst, scribe, notifier, trend,
     ]
 
     # 体现“可寻址”：打印各 agent 的 endpoint。

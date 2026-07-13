@@ -3,7 +3,7 @@
 职责
 ----
 * 订阅需要“让人知道”的事件：coord/abort（中止）、analyst/decision（分析决策）、
-  analyst/report（带失败的分析）、notify（通用通知主题），以及 ReporterAgent 的告警。
+  analyst/report（带失败的分析）、incident/raise（事故）、notify（通用通知主题）。
 * 通过可插拔 channel 发送通知：默认仅打印 + 预留 webhook 钩子（不在 MVP 真实发送）。
   channel 可通过 config.notifier_channel 选择（如 'print' / 'webhook'）。
 
@@ -36,6 +36,7 @@ class NotifierAgent(Agent):
         "coord/abort",
         "analyst/decision",
         "analyst/report",
+        "incident/raise",
         "notify",
     )
 
@@ -91,6 +92,17 @@ class NotifierAgent(Agent):
                 f"{m.get('total')} 建议={m.get('recommendation')}",
             )
 
+    async def _on_incident(self, m: dict) -> None:
+        """Alert on raised incidents (absorbs Reporter alert duty)."""
+        inc = m.get("incident", m)
+        severity = m.get("severity", "info")
+        raised_by = m.get("raised_by", "unknown")
+        description = m.get("description", str(inc))
+        self.notify(
+            f"事故告警 [{severity}]",
+            f"来源={raised_by}：{description}",
+        )
+
     async def _on_notify(self, m: dict) -> None:
         self.notify(m.get("title", "通知"), m.get("body", str(m)))
 
@@ -101,6 +113,7 @@ class NotifierAgent(Agent):
         self.subscribe("coord/abort", self._on_abort)
         self.subscribe("analyst/decision", self._on_decision)
         self.subscribe("analyst/report", self._on_report)
+        self.subscribe("incident/raise", self._on_incident)
         self.subscribe("notify", self._on_notify)
         self._stop = asyncio.Event()
         try:
