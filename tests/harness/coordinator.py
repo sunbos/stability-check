@@ -28,7 +28,7 @@ for _p in (_HARNESS_DIR, _AGENTS_DIR):
 
 from agent import Agent  # noqa: E402
 from bus import EventBus  # noqa: E402
-from context import RunContext, TaskBoard, Task  # noqa: E402
+from context import RunContext, Task  # noqa: E402
 
 
 class Coordinator(Agent):
@@ -428,8 +428,6 @@ class Coordinator(Agent):
 
 if __name__ == "__main__":
     # 简易独立运行入口（需外部已建 bus + ctx + cfg）。
-    import json
-
     from bus import EventBus
     from context import RunContext
     from config import load_config_from_env
