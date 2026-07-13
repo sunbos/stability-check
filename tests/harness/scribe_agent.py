@@ -117,6 +117,24 @@ class ScribeAgent(Agent):
             sum(recover_times) / len(recover_times) if recover_times else None
         )
         max_recover_time = max(recover_times) if recover_times else None
+        # 决策分布（pass/warn/recheck/fail）—— 自治层可见性核心指标。
+        decision_counts: dict = {"pass": 0, "warn": 0, "recheck": 0, "fail": 0}
+        risk_scores: list = []
+        for r in self.timeline:
+            d = (r.get("decision") or "").lower()
+            if d in decision_counts:
+                decision_counts[d] += 1
+            else:
+                decision_counts.setdefault("unknown", 0)
+                decision_counts["unknown"] += 1
+            risk = r.get("risk_score")
+            if isinstance(risk, (int, float)):
+                risk_scores.append(risk)
+        avg_risk = (
+            round(sum(risk_scores) / len(risk_scores), 1)
+            if risk_scores else None
+        )
+        max_risk = max(risk_scores) if risk_scores else None
         return {
             "narrative": list(self.narrative),
             "total": total,
@@ -127,6 +145,9 @@ class ScribeAgent(Agent):
             "avg_recover_time": round(avg_recover_time, 1) if avg_recover_time is not None else None,
             "max_recover_time": max_recover_time,
             "rounds": total,
+            "decision_counts": decision_counts,
+            "avg_risk_score": avg_risk,
+            "max_risk_score": max_risk,
         }
 
     async def _on_summary_request(self, m: dict) -> None:

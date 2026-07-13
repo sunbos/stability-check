@@ -201,8 +201,32 @@ class AnalystAgent(Agent):
 
     async def _on_vote_request(self, message: dict) -> None:
         """处理 vote/request：回 vote/reply + 更新风险跟踪 + 主动事故检查。"""
-        reply = self.compute_vote(message)
+        round_no = message.get("round_no")
+        # 可见性：vote/request 接收打印。
+        ts_req = time.strftime("%H:%M:%S", time.localtime())
+        print(f"[{ts_req}] [风险分析] 第 {round_no} 轮收到投票请求，开始评估...")
+
+        # LLM 调用同步阻塞，用 run_in_executor 异步化避免阻塞事件循环。
+        # 这样 Coordinator 的 vote_timeout 内能真正收到 vote/reply。
+        loop = asyncio.get_event_loop()
+        try:
+            reply = await loop.run_in_executor(None, self.compute_vote, message)
+        except Exception:  # noqa: BLE001 - LLM 异常时弃权
+            reply = self._abstain_reply("LLM 调用异常，弃权")
+
         reply["req_id"] = message.get("req_id")
+
+        # 可见性：vote/reply 发送打印。
+        ts_reply = time.strftime("%H:%M:%S", time.localtime())
+        risk = reply.get("risk_score", "?")
+        conf = reply.get("confidence", "?")
+        method = reply.get("method", "?")
+        rationale = reply.get("rationale", "")
+        print(
+            f"[{ts_reply}] [风险分析] 第 {round_no} 轮投票回复: "
+            f"风险={risk} 置信度={conf} 方法={method} 说明={rationale}"
+        )
+
         await self.bus.publish(self.VOTE_REPLY, reply)
         # Update private risk tracking + proactive incident check
         self._update_risk_tracking(reply)
@@ -276,6 +300,15 @@ class AnalystAgent(Agent):
         callable (lambda **kw: ...). When the real async _raise_incident is
         in place, calling it returns a coroutine which we then await.
         """
+        # 可见性：主动事故 raise 打印（让自治层主动行为可观察）。
+        ts = time.strftime("%H:%M:%S", time.localtime())
+        severity = kw.get("severity", "?")
+        category = kw.get("category", "?")
+        description = kw.get("description", "")
+        print(
+            f"[{ts}] [风险分析] 主动 raise 事故: "
+            f"严重={severity} 类别={category} 描述={description}"
+        )
         result = self._raise_incident(**kw)
         if asyncio.iscoroutine(result):
             await result

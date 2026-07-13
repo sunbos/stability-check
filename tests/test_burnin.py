@@ -88,6 +88,17 @@ def _print_summary(s: dict) -> None:
     print(f"  中止原因: {reason if reason else '(无)'}")
     print(f"  平均恢复: {_fmt_seconds(avg)}")
     print(f"  最长恢复: {_fmt_seconds(mx)}")
+    # 自治层指标：决策分布 + 风险分
+    dc = s.get("decision_counts") or {}
+    if dc:
+        dc_str = " ".join(f"{k}={v}" for k, v in dc.items() if v > 0)
+        print(f"  决策分布: {dc_str or '(无)'}")
+    avg_risk = s.get("avg_risk_score")
+    max_risk = s.get("max_risk_score")
+    if avg_risk is not None:
+        print(f"  平均风险: {avg_risk}")
+    if max_risk is not None:
+        print(f"  最高风险: {max_risk}")
 
 
 def _print_narrative(narrative) -> None:

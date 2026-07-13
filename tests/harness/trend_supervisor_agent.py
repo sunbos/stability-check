@@ -96,6 +96,7 @@ class TrendSupervisorAgent(Agent):
             return
         recover_time = message.get("recover_time")
         passed = bool(message.get("passed", False))
+        round_no = message.get("round_no") or message.get("round")
 
         # Record baseline on first valid recover_time
         if self.baseline_recover_time is None and recover_time is not None:
@@ -105,6 +106,26 @@ class TrendSupervisorAgent(Agent):
         if recover_time is not None:
             self.recover_time_window.append(float(recover_time))
         self.fail_rate_window.append(passed)
+
+        # 可见性：窗口状态打印（让自治层状态可观察）。
+        ts = time.strftime("%H:%M:%S", time.localtime())
+        rt_str = (
+            f"{recover_time:.1f}秒"
+            if isinstance(recover_time, (int, float))
+            else "NA"
+        )
+        window_size = len(self.recover_time_window)
+        if window_size < self.WARMUP_ROUNDS:
+            status = f"预热中({window_size}/{self.WARMUP_ROUNDS})"
+        else:
+            status = "已就绪"
+        window_preview = list(self.recover_time_window)[-3:]
+        window_str = ",".join(f"{v:.1f}" for v in window_preview)
+        print(
+            f"[{ts}] [趋势监督] 第 {round_no} 轮入窗: "
+            f"恢复={rt_str} 通过={passed} "
+            f"窗口={window_size}/{self.WINDOW_SIZE} [{window_str}] {status}"
+        )
 
         # Run all detectors (each dedups internally)
         await self._detect_trend_increment()
@@ -240,6 +261,15 @@ class TrendSupervisorAgent(Agent):
         callable (lambda **kw: ...). When the real async _raise_incident is
         in place, calling it returns a coroutine which we then await.
         """
+        # 可见性：事故 raise 打印（让自治层主动行为可观察）。
+        ts = time.strftime("%H:%M:%S", time.localtime())
+        severity = kw.get("severity", "?")
+        category = kw.get("category", "?")
+        description = kw.get("description", "")
+        print(
+            f"[{ts}] [趋势监督] 主动 raise 事故: "
+            f"严重={severity} 类别={category} 描述={description}"
+        )
         result = self._raise_incident(**kw)
         if asyncio.iscoroutine(result):
             await result

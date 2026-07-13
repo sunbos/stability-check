@@ -224,11 +224,34 @@ class Coordinator(Agent):
                     risk_score=risk_score,
                     has_critical=self._has_critical_incident,
                 )
+                # 可见性：决策矩阵推理过程打印。
+                ts_dm = time.strftime("%H:%M:%S", time.localtime())
+                print(
+                    f"[{ts_dm}] [决策矩阵] 第 {round_no} 轮: "
+                    f"事实(found={found},changed={changed}) "
+                    f"风险={risk_score} "
+                    f"critical={self._has_critical_incident} "
+                    f"-> 决策={decision} "
+                    f"(投票方法={vote_result.get('method')})"
+                )
             except Exception:  # noqa: BLE001 - 投票失败不阻塞核心循环
                 decision = "pass"
+                ts_err = time.strftime("%H:%M:%S", time.localtime())
+                print(
+                    f"[{ts_err}] [决策矩阵] 第 {round_no} 轮: "
+                    f"投票异常，回退决策=pass"
+                )
             finally:
                 # 每轮评估后重置 critical 标记（已 consumed）。
                 self._has_critical_incident = False
+        else:
+            # 可见性：事实层失败时也打印决策矩阵推理。
+            ts_dm = time.strftime("%H:%M:%S", time.localtime())
+            print(
+                f"[{ts_dm}] [决策矩阵] 第 {round_no} 轮: "
+                f"事实层失败(found={found},changed={changed}) "
+                f"-> 决策=fail (跳过投票)"
+            )
 
         if failed:
             self.total_failures += 1
@@ -512,8 +535,26 @@ class Coordinator(Agent):
         async def _vote_handler(msg: dict) -> None:
             if msg.get("req_id") == req_id:
                 replies.append(msg)
+                # 可见性：每个投票到达时立即打印（让投票过程可观察）。
+                ts = time.strftime("%H:%M:%S", time.localtime())
+                voter = msg.get("voter", "unknown")
+                risk = msg.get("risk_score", "?")
+                conf = msg.get("confidence", "?")
+                method = msg.get("method", "?")
+                rationale = msg.get("rationale", "")
+                print(
+                    f"[{ts}] [投票] 收到 {voter} 投票: "
+                    f"风险={risk} 置信度={conf} 方法={method} "
+                    f"说明={rationale}"
+                )
 
         self.bus.subscribe(self.VOTE_REPLY_TOPIC, _vote_handler)
+        # 可见性：vote/request 发出时打印。
+        ts_req = time.strftime("%H:%M:%S", time.localtime())
+        print(
+            f"[{ts_req}] [投票] 第 {round_no} 轮发起投票请求 "
+            f"(超时={timeout:.1f}s 事实={facts})"
+        )
         try:
             await self.bus.publish(
                 self.VOTE_REQUEST_TOPIC,
@@ -540,7 +581,16 @@ class Coordinator(Agent):
         finally:
             self.bus.unsubscribe(self.VOTE_REPLY_TOPIC, _vote_handler)
 
-        return self._combine_votes(replies)
+        result = self._combine_votes(replies)
+        # 可见性：综合结果打印。
+        ts_done = time.strftime("%H:%M:%S", time.localtime())
+        voters_str = ",".join(result.get("voters", [])) or "(无)"
+        print(
+            f"[{ts_done}] [投票] 综合结果: "
+            f"风险={result['risk_score']} 方法={result['method']} "
+            f"投票者=[{voters_str}]"
+        )
+        return result
 
     async def _on_incident(self, message: dict) -> None:
         """处理 incident/raise：按决策矩阵 ack 并跟踪 critical（设计 §5.2）。
@@ -562,6 +612,18 @@ class Coordinator(Agent):
             self._has_critical_incident = True
 
         ack = self._should_ack_incident(incident, self._last_risk_score)
+        # 可见性：事故 ack 打印（让 incident 闭环可观察）。
+        ts = time.strftime("%H:%M:%S", time.localtime())
+        category = incident.get("category", "?")
+        desc = incident.get("description", "")
+        print(
+            f"[{ts}] [事故] 收到 {raised_by} 事故: "
+            f"严重={severity} 类别={category} 描述={desc}"
+        )
+        print(
+            f"[{ts}] [事故] Coordinator ack: "
+            f"决策={ack['decision']} 动作={ack['action']} 原因={ack['reason']}"
+        )
         await self.publish(
             self.INCIDENT_ACK_TOPIC,
             {
