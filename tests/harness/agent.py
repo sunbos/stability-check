@@ -22,6 +22,7 @@ import sys
 from dataclasses import dataclass
 
 from bus import EventBus
+from context import ReadOnlyContext
 
 # 让 harness/agent.py 能直接 `from device_client import DeviceClient`：
 # device_client 位于本目录的上级 agents/ 下。
@@ -52,7 +53,7 @@ class AgentSpec:
 class Agent:
     """Agent 基类。子类通常覆盖 step() 与/或 run()。"""
 
-    def __init__(self, spec: AgentSpec, bus: EventBus, ctx) -> None:
+    def __init__(self, spec: AgentSpec, bus: EventBus, ctx: ReadOnlyContext) -> None:
         self.spec = spec
         self.bus = bus
         self.ctx = ctx
