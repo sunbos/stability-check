@@ -44,6 +44,7 @@ class RunConfig:
     # ---- 策略层智能体（Analyst / Scribe / Notifier）----
     analyst_enabled: bool = True   # 是否启用 LLM 分析智能体；false=纯规则运行（无 LLM 调用）
     notifier_channel: str = "print"  # 通知通道：'print'（默认，仅打印）/ 'webhook'（预留钩子）
+    vote_timeout: float = 1.0      # 投票收集超时（秒）：无投票者时快速回退默认风险
 
 
 def _env_int(name: str, default: int) -> int:
@@ -95,6 +96,7 @@ def load_config_from_env() -> RunConfig:
         analyst_enabled=os.environ.get("BURNIN_ANALYST", "on").strip().lower()
         not in ("off", "0", "false", "no"),
         notifier_channel=os.environ.get("BURNIN_NOTIFIER", "print") or "print",
+        vote_timeout=_env_float("BURNIN_VOTE_TIMEOUT", 1.0),
     )
 
 
