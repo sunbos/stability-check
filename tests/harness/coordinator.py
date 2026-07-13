@@ -89,6 +89,8 @@ class Coordinator(Agent):
         self.k = getattr(c, "k", 1.5) if c else 1.5
         self.max_rounds = getattr(c, "max_rounds", 0) if c else 0
         self.max_duration = getattr(c, "max_duration", 0.0) if c else 0.0
+        # 投票超时（设计 §5.3）：无投票者时快速超时回退默认风险。
+        self.vote_timeout = getattr(c, "vote_timeout", 1.0) if c else 1.0
 
     # ------------------------------------------------------------------ #
     # 内部状态辅助
@@ -197,6 +199,37 @@ class Coordinator(Agent):
         )
         failed = not clean
 
+        # ---- 策略层：投票 + 决策矩阵（设计 §5.3 / §5.4）----
+        # 仅在事实层干净通过时收集投票；事实层失败时跳过投票（节省超时）。
+        # 决策矩阵是建议性的：风险分不能把 fail 改成 pass（安全底线），
+        # 但可以在 pass 上叠加 warn/recheck 标记供日志和后续 recheck 机制使用。
+        decision = "fail" if failed else "pass"
+        risk_score = self._last_risk_score
+        if not failed:
+            try:
+                vote_result = await self._collect_votes(
+                    round_no=round_no,
+                    facts={
+                        "found": found,
+                        "changed": changed,
+                        "t_recover": recover_time,
+                    },
+                    timeout=self.vote_timeout,
+                )
+                risk_score = vote_result["risk_score"]
+                self._last_risk_score = risk_score
+                decision = self._apply_decision_matrix(
+                    found=found,
+                    changed=changed,
+                    risk_score=risk_score,
+                    has_critical=self._has_critical_incident,
+                )
+            except Exception:  # noqa: BLE001 - 投票失败不阻塞核心循环
+                decision = "pass"
+            finally:
+                # 每轮评估后重置 critical 标记（已 consumed）。
+                self._has_critical_incident = False
+
         if failed:
             self.total_failures += 1
             self.consecutive_failures += 1
@@ -219,6 +252,8 @@ class Coordinator(Agent):
             "event_error": ev.get("error"),
             "status_error": st.get("error"),
             "diff": st.get("diff"),
+            "decision": decision,
+            "risk_score": risk_score,
             "timestamp": time.time(),
         }
 
@@ -233,12 +268,14 @@ class Coordinator(Agent):
             if isinstance(recover_time, (int, float))
             else "NA"
         )
+        decision_str = f" 决策={decision} 风险={risk_score}" if not failed else ""
         print(
             f"[{ts}] [拷机] 第 {round_no} 轮 {tag} "
             f"事件={found} 状态偏移={changed} "
             f"恢复耗时={rt_str} "
             f"累计失败={self.total_failures} "
             f"连续失败={self.consecutive_failures}"
+            f"{decision_str}"
         )
         self.ctx.append_log(
             f"[拷机] 第 {round_no} 轮 {tag} "

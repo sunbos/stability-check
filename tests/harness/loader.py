@@ -6,7 +6,8 @@ build_system(cfg) -> (EventBus, RunContext, list[Agent])
   - EventBus：所有 agent 唯一的通信通道。
   - RunContext：共享上下文（strategy_text 已填；baseline 尽力抓一次，可被调用方覆盖）
   - list[Agent]：RebootAgent / WatchAgent / EventCheckAgent / StatusCheckAgent /
-    Coordinator / AnalystAgent / ScribeAgent / NotifierAgent（顺序即订阅/启动顺序）。
+    Coordinator / AnalystAgent / ScribeAgent / NotifierAgent / TrendSupervisorAgent
+    （顺序即订阅/启动顺序）。
   - 打印各 agent 的 endpoint，体现“可寻址”。
 
 注意：harness/ 与 agents/ 下存在同名 agent 模块，且部分 harness 模块会把
@@ -58,6 +59,7 @@ _coordinator_mod = _load_harness("coordinator")
 _analyst_mod = _load_harness("analyst_agent")
 _scribe_mod = _load_harness("scribe_agent")
 _notifier_mod = _load_harness("notifier_agent")
+_trend_mod = _load_harness("trend_supervisor_agent")
 
 RebootAgent = _reboot_mod.RebootAgent
 WatchAgent = _watch_mod.WatchAgent
@@ -67,6 +69,7 @@ Coordinator = _coordinator_mod.Coordinator
 AnalystAgent = _analyst_mod.AnalystAgent
 ScribeAgent = _scribe_mod.ScribeAgent
 NotifierAgent = _notifier_mod.NotifierAgent
+TrendSupervisorAgent = _trend_mod.TrendSupervisorAgent
 
 
 def _isapi(host: str, path: str) -> str:
@@ -127,6 +130,7 @@ def build_system(cfg) -> tuple:
     analyst_spec = _spec("analyst", "analyst", "")
     scribe_spec = _spec("scribe", "scribe", "")
     notifier_spec = _spec("notifier", "notifier", "")
+    trend_spec = _spec("trend_supervisor", "trend_supervisor", "")
 
     reboot = RebootAgent(reboot_spec, bus, ctx)
     watch = WatchAgent(watch_spec, bus, ctx)
@@ -136,10 +140,11 @@ def build_system(cfg) -> tuple:
     analyst = AnalystAgent(analyst_spec, bus, ctx, cfg=cfg)
     scribe = ScribeAgent(scribe_spec, bus, ctx, cfg=cfg)
     notifier = NotifierAgent(notifier_spec, bus, ctx, cfg=cfg)
+    trend = TrendSupervisorAgent(trend_spec, bus, ctx, cfg=cfg)
 
     agents = [
         reboot, watch, event, status,
-        coordinator, analyst, scribe, notifier,
+        coordinator, analyst, scribe, notifier, trend,
     ]
 
     # 体现“可寻址”：打印各 agent 的 endpoint。
