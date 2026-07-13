@@ -1,26 +1,29 @@
-"""AnalystAgent：策略层分析智能体（仅使用标准库）。
+"""AnalystAgent / RiskAnalyst：自治层风险评估智能体（仅使用标准库）。
 
 定位（关键设计约束）
 --------------------
-* 这是**策略层 / 政策层**智能体，**绝不参与每一轮的 pass/fail 判定**。
+* 这是 **L3 自治层** 智能体（RiskAnalyst 角色），**绝不参与每一轮的 pass/fail 判定**。
   每一轮的 pass/fail 由确定性的 Coordinator（Loop Core）负责，保证核心逻辑
   可复现、低维护。
-* Analyst 只在**事故（incident）**时给出“是否继续拷机”的政策性决策；当人不在场
-  时，它能自主处理突发情况（例如重启过程中设备断电 → 不再恢复），决定是否停机。
-* **优雅降级**：无 LLM key（或 LLM 调用失败/超时）时，自动回退到规则引擎
-  （rule-based）。规则引擎覆盖“断电/超时”“连续失败”等多种场景，因此即便没有
-  网络/密钥，整套拷机依旧可靠运行。
+* **三重职责**：
+  1. 事故决策（`analyst/advise`）：Coordinator 在事故时请求决策；无 LLM 时规则引擎
+     覆盖“断电/超时”“连续失败”等场景，确保人不在场时也能自主停机。
+  2. 风险投票（`vote/request` → `vote/reply`）：每轮用 LLM 评估风险分（0-100），
+     供 Coordinator 加权综合。LLM 不可用时弃权（abstain）。
+  3. 主动事故（`incident/raise`）：风险分 > 80 连续 3 轮 → critical；单轮 ≥ 90 → warn。
+     这是自治性的核心 —— 不再被动等待 Coordinator 询问。
+* **优雅降级**：无 LLM key（或调用失败/超时）时，advise 回退规则引擎，vote 弃权，
+  主动事故静默。TrendSupervisor（纯规则）独立工作，自治层至少有一个投票者。
 * LLM 默认来自 OpenRouter（`tencent/hy3:free`），可经环境变量切换到任意 OpenAI 兼容 API。
   key **只**来自环境变量/`.env`，绝不被打印或硬编码。
 
 通信（只走总线）
 --------------
-* 订阅 `analyst/advise`（request/response）：Coordinator 在事故时请求决策；
-  Analyst 在 `analyst/advise/reply` 回带相同 req_id 的 {continue, reason, source}。
-* 订阅 `incident/raise`（publish）：记录事故并广播 `analyst/decision`（供 Scribe /
-  Notifier 审计与通知）。
-* 订阅 `round/done`（publish）：每次轮次产出多角度 `analyst/report`（稳定性评分、
-  失败趋势、恢复耗时），LLM 仅在事故或显式开启时做整体分析，控制调用成本。
+* 订阅 `analyst/advise`（request/response）：事故决策请求；回 `analyst/advise/reply`。
+* 订阅 `vote/request`（publish）：风险评估投票；回 `vote/reply`（correlated by req_id）。
+* 订阅 `incident/raise`（publish）：记录事故并广播 `analyst/decision`。
+* 订阅 `round/done`（publish）：累积私有 `recent_rounds` + 产出 `analyst/report`。
+* 主动发布 `incident/raise`：高风险时主动告警（自治性核心）。
 
 仅依赖标准库 + 同仓 bus / agent / context / llm_client，无第三方依赖。
 """
@@ -31,6 +34,8 @@ import asyncio
 import os
 import sys
 import time
+import uuid
+from collections import deque
 
 # harness 内模块可被直接导入（与 loader 同手法）。
 _HARNESS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -70,7 +75,11 @@ def _heuristic_continue(text: str) -> bool | None:
 
 
 class AnalystAgent(Agent):
-    """策略层分析智能体：事故决策 + 多角度分析，确定性核心之外的政策大脑。"""
+    """L3 自治层风险评估智能体（RiskAnalyst 角色）。
+
+    三重职责：事故决策（advise）+ 风险投票（vote）+ 主动告警（proactive incident）。
+    确定性核心之外的政策大脑；LLM 不可用时全面降级，永不卡死。
+    """
 
     ADVISE_TOPIC = "analyst/advise"
     ADVISE_REPLY = "analyst/advise/reply"
@@ -78,6 +87,13 @@ class AnalystAgent(Agent):
     DECISION_TOPIC = "analyst/decision"
     ROUND_DONE = "round/done"
     INCIDENT = "incident/raise"
+    VOTE_REQUEST = "vote/request"
+    VOTE_REPLY = "vote/reply"
+
+    # Proactive incident thresholds (design §5.2)
+    HIGH_RISK_THRESHOLD = 80        # risk > 80 → counts toward consecutive
+    VERY_HIGH_RISK_THRESHOLD = 90   # single round >= 90 → warn
+    CRITICAL_CONSECUTIVE = 3        # 3 consecutive high-risk → critical
 
     def __init__(self, spec, bus, ctx, cfg=None) -> None:
         super().__init__(spec, bus, ctx)
@@ -87,6 +103,11 @@ class AnalystAgent(Agent):
         # LLM 客户端懒加载（避免无 key 时也 import / 触发副作用）。
         self._llm = None
         self._llm_loaded = False
+        # Private state (design §6.3 RiskAnalystState)
+        self.recent_rounds: deque = deque(maxlen=10)
+        self.last_risk_score: int = 50
+        self._consecutive_high_risk: int = 0
+        self._critical_raised_for_streak: bool = False
 
     def _read_enabled(self) -> bool:
         env = os.environ.get("BURNIN_ANALYST", "").strip().lower()
@@ -113,6 +134,151 @@ class AnalystAgent(Agent):
 
         self._llm = get_client()  # 无 key 时返回 None
         return self._llm
+
+    # ------------------------------------------------------------------ #
+    # 风险投票（vote/request → vote/reply）
+    # ------------------------------------------------------------------ #
+    def compute_vote(self, vote_request: dict) -> dict:
+        """用 LLM 评估风险分（0-100），返回 vote/reply dict（不含 req_id）。
+
+        LLM 不可用 / 响应无法解析 → 弃权（abstain）。设计 §5.3 / §7。
+        """
+        llm = self._ensure_llm()
+        if llm is None:
+            return self._abstain_reply("LLM 不可用，弃权")
+
+        facts = vote_request.get("facts", {})
+        history = vote_request.get("history_summary", {})
+        system_prompt = (
+            "你是门禁设备稳定性拷机的风险评估智能体。根据本轮事实与近期历史，"
+            "评估风险分（0-100，越高越危险）。\n"
+            "请以 JSON 返回："
+            '{"risk_score": 0-100, "rationale": "中文简述", "confidence": 0-1}'
+        )
+        user_prompt = (
+            f"本轮事实：{facts}\n"
+            f"近期历史摘要：{history}\n"
+            f"近期轮次：{self._short_history()}\n"
+            "请评估风险。"
+        )
+        try:
+            text = llm.chat(system_prompt, user_prompt, timeout=25.0)
+        except Exception:
+            return self._abstain_reply("LLM 调用异常，弃权")
+        if not text:
+            return self._abstain_reply("LLM 无响应，弃权")
+
+        result = _extract_first_json(text)
+        if not result:
+            return self._abstain_reply("LLM 响应无法解析，弃权")
+
+        risk = result.get("risk_score")
+        if not isinstance(risk, (int, float)) or not (0 <= risk <= 100):
+            return self._abstain_reply("LLM 风险分无效，弃权")
+
+        confidence = result.get("confidence", 0.5)
+        if not isinstance(confidence, (int, float)) or not (0 <= confidence <= 1):
+            confidence = 0.5
+
+        return {
+            "voter": "risk_analyst",
+            "risk_score": int(risk),
+            "rationale": str(result.get("rationale", "")) or "LLM 未给出说明",
+            "confidence": round(float(confidence), 2),
+            "method": "llm",
+        }
+
+    @staticmethod
+    def _abstain_reply(reason: str = "弃权") -> dict:
+        """Build an abstain vote reply (LLM unavailable / unparseable)."""
+        return {
+            "voter": "risk_analyst",
+            "risk_score": 50,
+            "rationale": reason,
+            "confidence": 0.0,
+            "method": "abstain",
+        }
+
+    async def _on_vote_request(self, message: dict) -> None:
+        """处理 vote/request：回 vote/reply + 更新风险跟踪 + 主动事故检查。"""
+        reply = self.compute_vote(message)
+        reply["req_id"] = message.get("req_id")
+        await self.bus.publish(self.VOTE_REPLY, reply)
+        # Update private risk tracking + proactive incident check
+        self._update_risk_tracking(reply)
+        await self._check_proactive_incident()
+
+    def _update_risk_tracking(self, reply: dict) -> None:
+        """Update last_risk_score + consecutive_high_risk counter."""
+        risk = reply.get("risk_score", 50)
+        self.last_risk_score = risk
+        if risk > self.HIGH_RISK_THRESHOLD:
+            self._consecutive_high_risk += 1
+        else:
+            self._consecutive_high_risk = 0
+            self._critical_raised_for_streak = False  # reset streak dedup
+
+    async def _check_proactive_incident(self) -> None:
+        """Proactively raise incidents on sustained/very-high risk (design §5.2).
+
+        - 3 consecutive rounds risk > 80 → critical (raised once per streak)
+        - single round risk >= 90 → warn
+        """
+        if (
+            self._consecutive_high_risk >= self.CRITICAL_CONSECUTIVE
+            and not self._critical_raised_for_streak
+        ):
+            await self._try_raise(
+                severity="critical",
+                raised_by="risk_analyst",
+                category="sustained_high_risk",
+                description=(
+                    f"风险分连续 {self._consecutive_high_risk} 轮 > "
+                    f"{self.HIGH_RISK_THRESHOLD}（last={self.last_risk_score}）"
+                ),
+                evidence={
+                    "consecutive": self._consecutive_high_risk,
+                    "last_risk": self.last_risk_score,
+                },
+                suggestion="recheck",
+            )
+            self._critical_raised_for_streak = True
+        elif self.last_risk_score >= self.VERY_HIGH_RISK_THRESHOLD:
+            await self._try_raise(
+                severity="warn",
+                raised_by="risk_analyst",
+                category="very_high_risk",
+                description=f"单轮风险分极高（{self.last_risk_score}）",
+                evidence={"risk": self.last_risk_score},
+                suggestion="recheck",
+            )
+
+    # ------------------------------------------------------------------ #
+    # 主动事故（incident/raise）
+    # ------------------------------------------------------------------ #
+    async def _raise_incident(self, **kw) -> None:
+        """Build a full incident message and publish to incident/raise.
+
+        Real implementation is async. Tests may replace this with a sync
+        callable to capture kwargs (see _try_raise for the bridge).
+        """
+        incident = {
+            "incident_id": f"inc-{uuid.uuid4().hex[:8]}",
+            "timestamp": time.time(),
+            **kw,
+        }
+        await self.bus.publish(self.INCIDENT, incident)
+
+    async def _try_raise(self, **kw) -> None:
+        """Call _raise_incident, awaiting if it's a coroutine.
+
+        This bridge supports test mocking of _raise_incident with a sync
+        callable (lambda **kw: ...). When the real async _raise_incident is
+        in place, calling it returns a coroutine which we then await.
+        """
+        result = self._raise_incident(**kw)
+        if asyncio.iscoroutine(result):
+            await result
 
     # ------------------------------------------------------------------ #
     # 决策：LLM 优先，失败/无 key 回退规则
@@ -279,11 +445,13 @@ class AnalystAgent(Agent):
         await self.publish(self.DECISION_TOPIC, {"incident": incident, **decision})
 
     async def _on_round_done(self, message: dict) -> None:
-        """轮次结束：产出多角度分析并广播。
+        """轮次结束：累积私有 recent_rounds + 产出多角度分析并广播。
 
         LLM 整体分析仅在事故或显式开启（BURNIN_ANALYST_LLM_PER_ROUND=1）时触发，
         控制免费模型的调用成本；规则分析始终产出。
         """
+        # Accumulate private state (design §6.3 RiskAnalystState)
+        self.recent_rounds.append(dict(message))
         report = self.round_report(dict(message))
         per_round_llm = (
             os.environ.get("BURNIN_ANALYST_LLM_PER_ROUND", "").strip().lower()
@@ -315,8 +483,9 @@ class AnalystAgent(Agent):
         await self.publish(self.REPORT_TOPIC, report)
 
     async def run(self) -> None:
-        """独立主循环：订阅 advise / incident / round/done，直到被取消。"""
+        """独立主循环：订阅 advise / vote / incident / round/done，直到被取消。"""
         self.subscribe(self.ADVISE_TOPIC, self._on_advise)
+        self.subscribe(self.VOTE_REQUEST, self._on_vote_request)
         self.subscribe(self.INCIDENT, self._on_incident)
         self.subscribe(self.ROUND_DONE, self._on_round_done)
         self._stop = asyncio.Event()
