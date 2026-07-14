@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+
+# 密钥文件：含 OpenRouter API key，绝不提交
+.env
+.pytest_cache/
+
+# 调研/工作流临时产物（子 agent 落盘的草稿，非交付物）
+research_*_findings.json
+*.findings.json
+agent-*.jsonl
