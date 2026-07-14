@@ -346,12 +346,39 @@ python tests/harness/scribe_agent.py
   `NotifierAgent` 吸收。
 - `CoordinatorContext` 是单内存对象；跨进程不安全（分布式总线需重构）。
 - `NotifierAgent` 的 webhook 通道是桩（`_send_webhook` 是空操作）。
-- `coord/recheck` 主题已发布但当前无 agent 订阅来触发实际 recheck 轮次。
-  决策矩阵在记录中标记轮次为 `recheck`，但 recheck 机制本身是未来工作。
 - LLM 在事故（advise）和每轮投票（vote）时被咨询；每轮 LLM 点评通过
   `BURNIN_PER_ROUND_LLM=1` 按需开启。
 - `test_burnin_session` 需要真实设备，不在 CI 中运行；仅策略层和自治层
   单元测试是无设备的。
-- `bus.publish(vote/request)` 会等待所有订阅者完成（包括 LLM 调用），
-  导致 `vote_timeout` 在实际运行中可能失效。当前行为可接受（投票最终
-  到达），但每轮会被 LLM 调用拖慢约 15 秒。
+
+## 12. 真正自治多智能体特性（feat/true-autonomous-mas 分支）
+
+以下特性在 `feat/true-autonomous-mas` 分支中实现，达到业界自治多智能体标准：
+
+### 12.1 EventBus 真异步化
+- `publish()` 改为 fire-and-forget（`asyncio.create_task` 执行 handler）
+- `publish_and_wait()` 保留给需要同步保证的场景（测试/baseline）
+- handler 异常不传播，仅记录日志
+- `vote_timeout` 现在真正生效（不再被 LLM 调用阻塞）
+
+### 12.2 L3 Agent 主动循环
+- TrendSupervisorAgent: 每 30s 主动检查趋势（`_proactive_check`）
+  - 陈旧数据告警：>5 分钟无新轮次 → raise warn
+- AnalystAgent: 每 45s 主动检查风险历史
+  - 连续高风险重新评估：确保 critical 事故被 raise
+- 这是核心自治属性——agent 不只响应消息，还独立监控
+
+### 12.3 Recheck 完整实现
+- 决策矩阵返回 `recheck` 时，Coordinator 发布 `coord/recheck`
+- EventCheckAgent + StatusCheckAgent 订阅 `coord/recheck`，重新检查设备
+- Recheck 结果通过 `check/event` + `check/status` 回到 Coordinator
+- 最多 recheck 1 次（`_recheck_pending` 防止无限循环）
+
+### 12.4 投票快速路径
+- `_collect_votes` 中，任一投票者 `risk >= 90` 立即返回
+- 不等待其他投票者，高风险立即触发 recheck
+
+### 12.5 保守错误处理
+- 投票异常时 `decision = warn`（不是 pass）
+- 风险分设为 60（保守中高风险）
+- 安全优先：乐观 pass 被替换为保守 warn
