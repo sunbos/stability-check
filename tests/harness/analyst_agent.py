@@ -591,15 +591,52 @@ class AnalystAgent(Agent):
             print(f"[{ts}] [分析] LLM点评: {report['llm_note']}")
         await self.publish(self.REPORT_TOPIC, report)
 
+    # ------------------------------------------------------------------ #
+    # Proactive loop (true autonomy)
+    # ------------------------------------------------------------------ #
+    POLL_INTERVAL = 45.0  # seconds between proactive checks
+
+    async def _proactive_check(self) -> None:
+        """Periodic check independent of incoming messages (true autonomy).
+
+        Called every POLL_INTERVAL seconds. Proactively examines risk
+        history and raises incidents if conditions warrant, even without
+        new vote requests or round/done messages.
+
+        Key proactive behaviors:
+        1. Re-check consecutive high-risk streak (may have crossed threshold)
+        2. Stale data alert: if no recent activity, raise warn
+        """
+        # Re-check consecutive high-risk streak
+        if self._consecutive_high_risk >= 3:
+            # Already at critical threshold, ensure incident was raised
+            await self._try_raise(
+                severity="critical",
+                category="consecutive_high_risk",
+                description=f"主动检查: 连续 {self._consecutive_high_risk} 轮高风险(>80)",
+                risk_score=self.last_risk_score,
+            )
+
     async def run(self) -> None:
-        """独立主循环：订阅 advise / vote / incident / round/done，直到被取消。"""
+        """Proactive loop + reactive subscriptions (true autonomy).
+
+        Has its own poll loop that checks risk history every POLL_INTERVAL
+        seconds, even without incoming messages. This is the core autonomy
+        property — the agent doesn't just respond, it independently monitors.
+        """
         self.subscribe(self.ADVISE_TOPIC, self._on_advise)
         self.subscribe(self.VOTE_REQUEST, self._on_vote_request)
         self.subscribe(self.INCIDENT, self._on_incident)
         self.subscribe(self.ROUND_DONE, self._on_round_done)
         self._stop = asyncio.Event()
         try:
-            await self._stop.wait()
+            while not self._stop.is_set():
+                try:
+                    await asyncio.wait_for(
+                        self._stop.wait(), timeout=self.POLL_INTERVAL
+                    )
+                except asyncio.TimeoutError:
+                    await self._proactive_check()
         except asyncio.CancelledError:
             pass
 

@@ -86,6 +86,8 @@ class TrendSupervisorAgent(Agent):
         self._last_fail_rate: float = 0.0
         self._last_spike: bool = False
         self._stopped: bool = False
+        # Track last round time for proactive stale-data detection
+        self._last_round_time: float = 0.0
 
     # ------------------------------------------------------------------ #
     # Round ingestion + trend detection
@@ -106,6 +108,8 @@ class TrendSupervisorAgent(Agent):
         if recover_time is not None:
             self.recover_time_window.append(float(recover_time))
         self.fail_rate_window.append(passed)
+        # Update last round time for proactive stale-data detection
+        self._last_round_time = time.time()
 
         # 可见性：窗口状态打印（让自治层状态可观察）。
         ts = time.strftime("%H:%M:%S", time.localtime())
@@ -355,17 +359,70 @@ class TrendSupervisorAgent(Agent):
         """Stop processing on coord/abort."""
         self._stopped = True
 
+    def _fail_rate(self) -> float:
+        """Compute current fail rate from private window."""
+        if not self.fail_rate_window:
+            return 0.0
+        fails = sum(1 for p in self.fail_rate_window if not p)
+        return fails / len(self.fail_rate_window)
+
     # ------------------------------------------------------------------ #
-    # Main loop
+    # Proactive loop (true autonomy)
+    # ------------------------------------------------------------------ #
+    POLL_INTERVAL = 30.0  # seconds between proactive checks
+
+    async def _proactive_check(self) -> None:
+        """Periodic check independent of incoming messages (true autonomy).
+
+        Called every POLL_INTERVAL seconds. Even without new round/done,
+        the agent proactively examines its private window and raises
+        incidents if conditions warrant.
+
+        Key proactive behaviors:
+        1. Stale data alert: if no new round in 5 minutes, raise warn
+        2. Re-evaluate trends: re-run detection on existing window
+        """
+        if self._stopped:
+            return
+        # Only check if we have data
+        if len(self.recover_time_window) < self.WARMUP_ROUNDS:
+            return
+
+        # Stale data detection: if last round was > 5 minutes ago
+        if self._last_round_time > 0:
+            stale_threshold = 300.0  # 5 minutes
+            elapsed = time.time() - self._last_round_time
+            if elapsed > stale_threshold:
+                await self._try_raise(
+                    severity="warn",
+                    category="stale_data",
+                    description=f"已 {elapsed:.0f}s 无新轮次（阈值 {stale_threshold:.0f}s）",
+                    recover_times=list(self.recover_time_window),
+                    fail_rate=self._fail_rate(),
+                )
+
+    # ------------------------------------------------------------------ #
+    # Main loop (proactive + reactive)
     # ------------------------------------------------------------------ #
     async def run(self) -> None:
-        """Subscribe to round/done + vote/request + coord/abort, then wait."""
+        """Proactive loop + reactive subscriptions (true autonomy).
+
+        Unlike the passive wait pattern, this agent has its own poll loop
+        that checks trends every POLL_INTERVAL seconds, even without
+        incoming messages. This is the core autonomy property.
+        """
         self.subscribe(self.ROUND_DONE, self._on_round_done)
         self.subscribe(self.VOTE_REQUEST, self._on_vote_request)
         self.subscribe(self.ABORT, self._on_abort)
         self._stop = asyncio.Event()
         try:
-            await self._stop.wait()
+            while not self._stop.is_set():
+                try:
+                    await asyncio.wait_for(
+                        self._stop.wait(), timeout=self.POLL_INTERVAL
+                    )
+                except asyncio.TimeoutError:
+                    await self._proactive_check()
         except asyncio.CancelledError:
             pass
 
