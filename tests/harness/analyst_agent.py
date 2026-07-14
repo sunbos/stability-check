@@ -280,7 +280,7 @@ class AnalystAgent(Agent):
         round_no = message.get("round_no")
         # 可见性：vote/request 接收打印。
         ts_req = time.strftime("%H:%M:%S", time.localtime())
-        print(f"[{ts_req}] [风险分析] 第 {round_no} 轮收到投票请求，开始评估...")
+        print(f"[{ts_req}] [L3·风险分析] 第 {round_no} 轮收到投票请求，开始评估...")
 
         # LLM 调用同步阻塞，用 run_in_executor 异步化避免阻塞事件循环。
         # 这样 Coordinator 的 vote_timeout 内能真正收到 vote/reply。
@@ -299,7 +299,7 @@ class AnalystAgent(Agent):
         method = reply.get("method", "?")
         rationale = reply.get("rationale", "")
         print(
-            f"[{ts_reply}] [风险分析] 第 {round_no} 轮投票回复: "
+            f"[{ts_reply}] [L3·风险分析] 第 {round_no} 轮投票回复: "
             f"风险={risk} 置信度={conf} 方法={method} 说明={rationale}"
         )
 
@@ -382,7 +382,7 @@ class AnalystAgent(Agent):
         category = kw.get("category", "?")
         description = kw.get("description", "")
         print(
-            f"[{ts}] [风险分析] 主动 raise 事故: "
+            f"[{ts}] [L3·风险分析] 主动 raise 事故: "
             f"严重={severity} 类别={category} 描述={description}"
         )
         result = self._raise_incident(**kw)
@@ -581,14 +581,14 @@ class AnalystAgent(Agent):
         avg_rt = report.get("avg_recover_time")
         avg_rt_str = f"{avg_rt:.1f}秒" if isinstance(avg_rt, (int, float)) else "NA"
         print(
-            f"[{ts}] [分析] 第 {report.get('round')} 轮分析: "
+            f"[{ts}] [L3·风险分析] 第 {report.get('round')} 轮分析: "
             f"稳定性评分={report.get('stability_score')} "
             f"通过={report.get('passed')}/{report.get('total')} "
             f"平均恢复={avg_rt_str} "
             f"建议={report.get('recommendation')}"
         )
         if report.get("llm_note"):
-            print(f"[{ts}] [分析] LLM点评: {report['llm_note']}")
+            print(f"[{ts}] [L3·风险分析] LLM点评: {report['llm_note']}")
         await self.publish(self.REPORT_TOPIC, report)
 
     # ------------------------------------------------------------------ #

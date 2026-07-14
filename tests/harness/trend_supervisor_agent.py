@@ -126,7 +126,7 @@ class TrendSupervisorAgent(Agent):
         window_preview = list(self.recover_time_window)[-3:]
         window_str = ",".join(f"{v:.1f}" for v in window_preview)
         print(
-            f"[{ts}] [趋势监督] 第 {round_no} 轮入窗: "
+            f"[{ts}] [L3·趋势监督] 第 {round_no} 轮入窗: "
             f"恢复={rt_str} 通过={passed} "
             f"窗口={window_size}/{self.WINDOW_SIZE} [{window_str}] {status}"
         )
@@ -271,7 +271,7 @@ class TrendSupervisorAgent(Agent):
         category = kw.get("category", "?")
         description = kw.get("description", "")
         print(
-            f"[{ts}] [趋势监督] 主动 raise 事故: "
+            f"[{ts}] [L3·趋势监督] 主动 raise 事故: "
             f"严重={severity} 类别={category} 描述={description}"
         )
         result = self._raise_incident(**kw)

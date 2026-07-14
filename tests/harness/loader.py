@@ -149,7 +149,7 @@ def build_system(cfg) -> tuple:
 
     # 体现“可寻址”：打印各 agent 的 endpoint。
     ts = time.strftime("%H:%M:%S", time.localtime())
-    print(f"[{ts}] [系统装配] 已装配的智能体及其端点:")
+    print(f"[{ts}] [系统] 已装配的智能体及其端点:")
     for a in agents:
         print(f"  - {a.spec.role:12s} -> {a.spec.endpoint or '(无端点)'}")
 

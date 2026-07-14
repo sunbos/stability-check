@@ -58,7 +58,7 @@ class ScribeAgent(Agent):
         entry = f"[{ts}] {text}"
         self.narrative.append(entry)
         self.ctx.append_log(f"记录员: {text}")
-        print(f"[{ts}] [记录员] {text}")
+        print(f"[{ts}] [L4·记录员] {text}")
 
     async def _on_round_done(self, m: dict) -> None:
         record = dict(m)

@@ -229,7 +229,7 @@ class Coordinator(Agent):
                 # 可见性：决策矩阵推理过程打印。
                 ts_dm = time.strftime("%H:%M:%S", time.localtime())
                 print(
-                    f"[{ts_dm}] [决策矩阵] 第 {round_no} 轮: "
+                    f"[{ts_dm}] [L2·协调者] 第 {round_no} 轮: "
                     f"事实(found={found},changed={changed}) "
                     f"风险={risk_score} "
                     f"critical={self._has_critical_incident} "
@@ -243,7 +243,7 @@ class Coordinator(Agent):
                 self._last_risk_score = risk_score
                 ts_err = time.strftime("%H:%M:%S", time.localtime())
                 print(
-                    f"[{ts_err}] [决策矩阵] 第 {round_no} 轮: "
+                    f"[{ts_err}] [L2·协调者] 第 {round_no} 轮: "
                     f"投票异常，保守降级决策=warn 风险={risk_score}"
                 )
             finally:
@@ -253,7 +253,7 @@ class Coordinator(Agent):
             # 可见性：事实层失败时也打印决策矩阵推理。
             ts_dm = time.strftime("%H:%M:%S", time.localtime())
             print(
-                f"[{ts_dm}] [决策矩阵] 第 {round_no} 轮: "
+                f"[{ts_dm}] [L2·协调者] 第 {round_no} 轮: "
                 f"事实层失败(found={found},changed={changed}) "
                 f"-> 决策=fail (跳过投票)"
             )
@@ -273,7 +273,7 @@ class Coordinator(Agent):
         if decision == "recheck" and not self._recheck_pending:
             self._recheck_pending = True
             ts_rc = time.strftime("%H:%M:%S", time.localtime())
-            print(f"[{ts_rc}] [重检] 第 {round_no} 轮触发 recheck（风险={risk_score}）")
+            print(f"[{ts_rc}] [L2·协调者] 第 {round_no} 轮触发 recheck（风险={risk_score}）")
             await self.publish(self.RECHECK_TOPIC, {
                 "round_no": round_no,
                 "trigger": "decision_matrix",
@@ -318,7 +318,7 @@ class Coordinator(Agent):
         )
         decision_str = f" 决策={decision} 风险={risk_score}" if not failed else ""
         print(
-            f"[{ts}] [拷机] 第 {round_no} 轮 {tag} "
+            f"[{ts}] [L2·协调者] 第 {round_no} 轮 {tag} "
             f"事件={found} 状态偏移={changed} "
             f"恢复耗时={rt_str} "
             f"累计失败={self.total_failures} "
@@ -326,7 +326,7 @@ class Coordinator(Agent):
             f"{decision_str}"
         )
         self.ctx.append_log(
-            f"[拷机] 第 {round_no} 轮 {tag} "
+            f"[L2·协调者] 第 {round_no} 轮 {tag} "
             f"累计失败={self.total_failures}"
         )
 
@@ -383,9 +383,9 @@ class Coordinator(Agent):
         }
         self.ctx.board.mark(f"round/{round_no}", "failed", record)
         self.ctx.append_round(record)
-        self.ctx.append_log(f"[拷机] 第 {round_no} 轮 失败: {reason}")
+        self.ctx.append_log(f"[L2·协调者] 第 {round_no} 轮 失败: {reason}")
         ts = time.strftime("%H:%M:%S", time.localtime())
-        print(f"[{ts}] [拷机] 第 {round_no} 轮 失败: {reason}")
+        print(f"[{ts}] [L2·协调者] 第 {round_no} 轮 失败: {reason}")
 
         asyncio.create_task(self._publish_and_check_abort(record))
 
@@ -571,7 +571,7 @@ class Coordinator(Agent):
                 method = msg.get("method", "?")
                 rationale = msg.get("rationale", "")
                 print(
-                    f"[{ts}] [投票] 收到 {voter} 投票: "
+                    f"[{ts}] [L2·协调者] 收到 {voter} 投票: "
                     f"风险={risk} 置信度={conf} 方法={method} "
                     f"说明={rationale}"
                 )
@@ -580,7 +580,7 @@ class Coordinator(Agent):
         # 可见性：vote/request 发出时打印。
         ts_req = time.strftime("%H:%M:%S", time.localtime())
         print(
-            f"[{ts_req}] [投票] 第 {round_no} 轮发起投票请求 "
+            f"[{ts_req}] [L2·协调者] 第 {round_no} 轮发起投票请求 "
             f"(超时={timeout:.1f}s 事实={facts})"
         )
         try:
@@ -611,7 +611,7 @@ class Coordinator(Agent):
                         if r.get("risk_score", 0) >= FAST_PATH_THRESHOLD:
                             ts_fp = time.strftime("%H:%M:%S", time.localtime())
                             print(
-                                f"[{ts_fp}] [投票] 快速路径触发: "
+                                f"[{ts_fp}] [L2·协调者] 快速路径触发: "
                                 f"{r.get('voter')} 风险={r.get('risk_score')} "
                                 f">= {FAST_PATH_THRESHOLD}"
                             )
@@ -629,7 +629,7 @@ class Coordinator(Agent):
         ts_done = time.strftime("%H:%M:%S", time.localtime())
         voters_str = ",".join(result.get("voters", [])) or "(无)"
         print(
-            f"[{ts_done}] [投票] 综合结果: "
+            f"[{ts_done}] [L2·协调者] 综合结果: "
             f"风险={result['risk_score']} 方法={result['method']} "
             f"投票者=[{voters_str}]"
         )
@@ -660,11 +660,11 @@ class Coordinator(Agent):
         category = incident.get("category", "?")
         desc = incident.get("description", "")
         print(
-            f"[{ts}] [事故] 收到 {raised_by} 事故: "
+            f"[{ts}] [L2·协调者] 收到 {raised_by} 事故: "
             f"严重={severity} 类别={category} 描述={desc}"
         )
         print(
-            f"[{ts}] [事故] Coordinator ack: "
+            f"[{ts}] [L2·协调者] 事故确认: "
             f"决策={ack['decision']} 动作={ack['action']} 原因={ack['reason']}"
         )
         await self.publish(
@@ -697,6 +697,9 @@ class Coordinator(Agent):
         self._round["round_no"] = round_no
         # 在共享清单上登记本轮任务（pending），完成时用 mark 更新其状态。
         self.ctx.board.add(Task(name=f"round/{round_no}", status="pending"))
+        # 轮次分隔线：每轮开始时打印醒目分隔，便于阅读。
+        ts = time.strftime("%H:%M:%S", time.localtime())
+        print(f"[{ts}] [L2·协调者] ═════════════ 第 {round_no} 轮开始 ═════════════")
         await self.publish(self.REBOOT_TOPIC, {"round_no": round_no})
 
     def _compute_interval(self) -> float:
