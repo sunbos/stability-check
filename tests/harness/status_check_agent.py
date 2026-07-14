@@ -133,9 +133,15 @@ class StatusCheckAgent(Agent):
         result = await self.step(message)
         await self.publish("check/status", result or {})
 
+    async def _on_recheck(self, message: dict) -> None:
+        """'coord/recheck' 处理器：重新比对状态（Phase 3）。"""
+        result = await self.step(message)
+        await self.publish("check/status", result or {})
+
     async def run(self) -> None:
-        """状态比对代理主循环：订阅 'device/recovered' 并阻塞等待消息。"""
+        """状态比对代理主循环：订阅 'device/recovered' + 'coord/recheck'。"""
         self.subscribe("device/recovered", self._on_recovered)
+        self.subscribe("coord/recheck", self._on_recheck)  # Phase 3
         self._stop = asyncio.Event()
         try:
             await self._stop.wait()

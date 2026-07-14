@@ -70,6 +70,7 @@ class EventCheckAgent(Agent):
     ROLE = "event"
     RECOVERED_TOPIC = "device/recovered"
     RESULT_TOPIC = "check/event"
+    RECHECK_TOPIC = "coord/recheck"  # Phase 3: subscribe to recheck requests
 
     # ------------------------------------------------------------------ #
     # 配置取值
@@ -156,9 +157,18 @@ class EventCheckAgent(Agent):
         result = await self.check(message)
         await self.publish(self.RESULT_TOPIC, result)
 
+    async def _on_recheck(self, message: dict) -> None:
+        """'coord/recheck' 处理器：重新核对并发布 'check/event'（Phase 3）。
+
+        Recheck 消息包含 t_reboot/t_recover，直接复用 check 逻辑。
+        """
+        result = await self.check(message)
+        await self.publish(self.RESULT_TOPIC, result)
+
     async def run(self) -> None:
-        """独立主循环：订阅 'device/recovered'，收到后发布 'check/event'。"""
+        """独立主循环：订阅 'device/recovered' + 'coord/recheck'。"""
         self.subscribe(self.RECOVERED_TOPIC, self._on_recovered)
+        self.subscribe(self.RECHECK_TOPIC, self._on_recheck)  # Phase 3
         self._stop = asyncio.Event()
         try:
             await self._stop.wait()

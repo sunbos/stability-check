@@ -77,6 +77,8 @@ class Coordinator(Agent):
         self._has_critical_incident: bool = False
         # 最近一次综合风险分（供 _should_ack_incident 使用）。
         self._last_risk_score: int = 50
+        # Recheck 状态：决策矩阵返回 recheck 时触发重新检查（最多 1 次）。
+        self._recheck_pending: bool = False
 
         # ---- 配置（缺失时回退默认值，保持可独立运行）----
         c = self.cfg
@@ -235,11 +237,14 @@ class Coordinator(Agent):
                     f"(投票方法={vote_result.get('method')})"
                 )
             except Exception:  # noqa: BLE001 - 投票失败不阻塞核心循环
-                decision = "pass"
+                # Phase 5: 保守降级——投票异常时 warn 而非 pass（安全优先）
+                decision = "warn"
+                risk_score = 60  # 保守中高风险
+                self._last_risk_score = risk_score
                 ts_err = time.strftime("%H:%M:%S", time.localtime())
                 print(
                     f"[{ts_err}] [决策矩阵] 第 {round_no} 轮: "
-                    f"投票异常，回退决策=pass"
+                    f"投票异常，保守降级决策=warn 风险={risk_score}"
                 )
             finally:
                 # 每轮评估后重置 critical 标记（已 consumed）。
@@ -261,6 +266,26 @@ class Coordinator(Agent):
         # 每一轮都执行了一次重启，计数累加（供策略/日志）。
         self.consecutive_reboots += 1
         self.ctx.set_consecutive_reboots(self.consecutive_reboots)
+
+        # ---- Recheck 机制（设计 §5.4）：决策矩阵返回 recheck 时触发重新检查 ----
+        # 发布 coord/recheck，EventCheck/StatusCheck 重新检查设备。
+        # 最多 recheck 1 次（_recheck_pending 标志防止无限循环）。
+        if decision == "recheck" and not self._recheck_pending:
+            self._recheck_pending = True
+            ts_rc = time.strftime("%H:%M:%S", time.localtime())
+            print(f"[{ts_rc}] [重检] 第 {round_no} 轮触发 recheck（风险={risk_score}）")
+            await self.publish(self.RECHECK_TOPIC, {
+                "round_no": round_no,
+                "trigger": "decision_matrix",
+                "t_reboot": t_reboot,
+                "t_recover": t_recover,
+            })
+            # Reset check flags to await recheck results
+            self._round["got_event"] = False
+            self._round["got_status"] = False
+            self._round["event"] = None
+            self._round["status"] = None
+            return  # Don't finalize round; await recheck results
 
         record = {
             "round": round_no,
@@ -309,6 +334,9 @@ class Coordinator(Agent):
         await self.publish(self.ROUND_DONE_TOPIC, record)
         # Broadcast state snapshot so autonomous agents can refresh their views.
         await self.ctx.publish_state(self.bus)
+
+        # Reset recheck flag after round is finalized.
+        self._recheck_pending = False
 
         # 检查中止阈值。
         if self.total_failures >= self.fail_threshold:
@@ -566,6 +594,8 @@ class Coordinator(Agent):
                 },
             )
             # 收集回复：无回复时等待完整超时；有回复后等待短暂静默期再退出。
+            # Phase 4 快速路径：任一投票者 risk>=90 立即返回（不等其他）。
+            FAST_PATH_THRESHOLD = 90
             loop = asyncio.get_event_loop()
             deadline = loop.time() + timeout
             last_count = 0
@@ -576,6 +606,19 @@ class Coordinator(Agent):
                 if len(replies) > last_count:
                     last_count = len(replies)
                     last_change = now
+                    # Fast path: high-risk vote triggers immediate return
+                    for r in replies:
+                        if r.get("risk_score", 0) >= FAST_PATH_THRESHOLD:
+                            ts_fp = time.strftime("%H:%M:%S", time.localtime())
+                            print(
+                                f"[{ts_fp}] [投票] 快速路径触发: "
+                                f"{r.get('voter')} 风险={r.get('risk_score')} "
+                                f">= {FAST_PATH_THRESHOLD}"
+                            )
+                            break
+                    else:
+                        continue
+                    break  # Fast path exit
                 elif replies and (now - last_change) >= 0.05:
                     break
         finally:
