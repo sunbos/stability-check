@@ -1,0 +1,41 @@
+# Environment variable overrides (master branch convention, BURNIN_* prefix):
+#   BURNIN_HOST / BURNIN_USER / BURNIN_PASSWORD  -> device.*
+#   BURNIN_STRATEGY                               -> autonomy.instruction
+#   LLM_API_KEY / OPENROUTER_API_KEY              -> enables real LLM (else rule fallback)
+#   LLM_MODEL  (default: tencent/hy3:free)        -> autonomy.diagnostic_llm_model
+#   LLM_BASE_URL (default: https://openrouter.ai/api/v1)
+device:
+  host: "192.168.3.33"          # test default (master); online MUST override via BURNIN_HOST
+  port: 80
+  username: "admin"
+  password: "121212.."          # test default (master); online MUST override via BURNIN_PASSWORD
+  http_timeout: 5
+
+loop:
+  total_rounds: 1000              # -> RunConfig.max_rounds
+  round_interval: 2               # -> Scheduler.base
+  consecutive_failure_threshold: 10  # -> RunConfig.fail_consecutive
+
+worker:
+  run_reboot: true
+  probe_interval: 5
+  probe_confirm_count: 2
+  warmup_time: 60
+  max_recover_timeout: 180
+
+event:
+  door_open_delay: 3
+  query_retry: 3
+  query_retry_interval: 5
+  time_skew_threshold: 3
+  max_time_sync_per_run: 5
+  expected_events:                # (major, minor) pairs, see 3.2 strategy D
+    remote_open: [3, 1024]
+    lock_open:    [5, 21]
+    lock_close:   [5, 22]         # soft fact; remove to skip
+    # face_pass:  [5, 75]
+
+autonomy:
+  enable_self_healing: true
+  diagnostic_llm_model: "tencent/hy3:free"  # OpenRouter free model (master llm_client.py default)
+  instruction: ""                # BURNIN_STRATEGY env var
