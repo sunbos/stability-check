@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stability-harness-loop-multiagent"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "Domain-agnostic autonomous loop harness (three-engine architecture)"
+dependencies = []  # Entire project: zero third-party runtime deps, stdlib only
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[tool.setuptools.packages.find]
+include = ["stability_harness_loop_multiagent*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
