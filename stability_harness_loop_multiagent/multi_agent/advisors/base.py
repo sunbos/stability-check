@@ -1,9 +1,8 @@
-"""AdvisorAgent — advisory monitoring/analysis role of the MAS.
+"""AdvisorAgent —— MAS 中的建议性监控/分析角色。
 
-Subscribes to ``loop/done``, votes on each round (risk, confidence), and may
-proactively raise incidents. Advisory ONLY: it never decides pass/fail. The
-loop collects votes via ``loop/vote/request`` -> ``agent/vote/reply`` and acks
-incidents via ``agent/incident/ack``.
+订阅 ``loop/done``，在每轮投票（风险、置信度），并可能主动提出事件。
+仅具建议性：它绝不裁决通过/失败。循环通过 ``loop/vote/request`` ->
+``agent/vote/reply`` 收集投票，并通过 ``agent/incident/ack`` 对事件进行 ack。
 """
 
 import time
@@ -21,7 +20,7 @@ class AdvisorAgent(Agent):
                 spec.subscriptions.append(needed)
         super().__init__(bus, spec)
         self.weight = weight
-        self._private_window: list = []  # self-contained state; never reads ctx
+        self._private_window: list = []  # 自包含状态；绝不读取 ctx
 
     async def handle(self, topic: str, message) -> None:
         if topic == "loop/done":
@@ -43,13 +42,13 @@ class AdvisorAgent(Agent):
         )
 
     def on_round(self, round_info: dict) -> None:
-        """Override: update private window from round_info."""
+        """覆盖：根据 round_info 更新私有窗口。"""
         self._private_window.append(round_info.get("risk"))
         if len(self._private_window) > 100:
             self._private_window.pop(0)
 
     def vote(self) -> tuple:
-        """Override: return (risk_score, confidence). Default abstains."""
+        """覆盖：返回 (risk_score, confidence)。默认弃权。"""
         return (50.0, 0.0)
 
     def raise_incident(self, severity: str, detail) -> None:

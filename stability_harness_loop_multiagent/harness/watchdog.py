@@ -1,8 +1,8 @@
-"""Watchdog — liveness / staleness / deadlock detector mounted OUTSIDE the
-execution engines (loop/multi_agent). It watches loop progress and heartbeats; when the
-control loop stalls (no activity within ``stall_timeout``) it publishes
-``harness/abort``. Because it is independent of loop/multi_agent, it can still inject an
-abort even if the loop is deadlocked.
+"""Watchdog —— 部署在执行引擎（loop/multi_agent）之外的存活 / 停滞 / 死锁探测器。
+
+它监视循环进度与心跳；当控制循环停滞（在 ``stall_timeout`` 内无任何活动）时，
+它发布 ``harness/abort``。由于它独立于 loop/multi_agent，即使循环已死锁，
+它仍能注入一个中止信号。
 """
 
 import asyncio
@@ -40,7 +40,7 @@ class Watchdog(Agent):
         self._last_activity = time.monotonic()
         self._log = logging.getLogger("stability_harness_loop_multiagent.watchdog")
 
-    async def handle(self, topic: str, message) -> None:  # every watched topic
+    async def handle(self, topic: str, message) -> None:  # 每个被监视的主题
         self._last_activity = time.monotonic()
 
     async def run(self) -> None:
@@ -49,11 +49,11 @@ class Watchdog(Agent):
             idle = time.monotonic() - self._last_activity
             if idle >= self.stall_timeout:
                 reason = f"stall: no activity for {idle:.1f}s (>= {self.stall_timeout}s)"
-                self._log.warning("watchdog abort: %s", reason)
+                self._log.warning("watchdog 中止: %s", reason)
                 self.bus.publish(
                     "harness/abort", {"reason": reason, "idle": idle}
                 )
-                self._last_activity = time.monotonic()  # avoid spamming
+                self._last_activity = time.monotonic()  # 避免重复刷屏
             else:
                 self.bus.publish(
                     self.liveness_topic,

@@ -1,18 +1,16 @@
-"""Runtime — agent lifecycle registry, supervisor, and harness-level routing.
+"""Runtime —— 智能体生命周期注册表、监督器，以及 harness 层级的路由。
 
-Owns the agent registry and drives the *lifecycle* of every agent in the system:
-``spawn`` / ``pause`` / ``resume`` / ``shutdown`` keyed by ``AgentSpec.id``. A
-background supervisor loop watches each agent task and restarts unexpectedly
-failed ones (bounded retries). On ``harness/abort`` (emitted by the Watchdog or
-Governance) it gracefully shuts everything down.
+持有智能体注册表，并驱动系统中每个智能体的*生命周期*：
+``spawn`` / ``pause`` / ``resume`` / ``shutdown``，以 ``AgentSpec.id`` 为键。
+一个后台监督循环监视每个智能体任务，并重启意外失败的智能体（有限重试）。
+当收到 ``harness/abort``（由看门狗或治理模块发出）时，它会优雅地关闭一切。
 
-Message routing is intentionally delegated to the EventBus — the single cross-engine
-seam. The runtime never fans messages out by hand; it only starts/stops agents and
-the bus delivers topics to whatever ``AgentSpec.subscriptions`` each agent declared.
-The provided ``route`` helper is a thin convenience over ``bus.publish_and_wait``.
+消息路由被有意地委托给 EventBus —— 这个唯一的跨引擎接缝。运行时绝不会
+手动将消息扇出；它只负责启动/停止智能体，而总线会把主题投递给每个智能体
+在 ``AgentSpec.subscriptions`` 中声明的订阅。所提供的 ``route`` 辅助方法只是
+对 ``bus.publish_and_wait`` 的一层薄封装。
 
-Engine isolation: imports only from this harness package (bus, agent). It never
-imports loop/ or multi_agent/.
+引擎隔离：仅从本 harness 包（bus、agent）导入。它从不导入 loop/ 或 multi_agent/。
 """
 
 import asyncio
@@ -40,7 +38,7 @@ class Runtime:
         self._agents: Dict[str, Agent] = {}
         self._factory: Dict[str, Callable[[AgentSpec], Agent]] = {}
         self._restart_count: Dict[str, int] = {}
-        # ids that are intentionally stopped (pause/shutdown) -> supervisor skips them
+        # 被主动停止（pause/shutdown）的 id -> 监督器会跳过它们
         self._intentional_stop: set = set()
         self._running = False
         self._supervisor_task: Optional["asyncio.Task"] = None
@@ -48,9 +46,9 @@ class Runtime:
         self._abort_reason: Optional[str] = None
         self._log = logging.getLogger("stability_harness_loop_multiagent.runtime")
 
-    # ---- registry ---------------------------------------------------
+    # ---- 注册表 -----------------------------------------------------
     def register(self, agent: Agent, factory: Optional[Callable[[AgentSpec], Agent]] = None) -> None:
-        """Register an already-built agent under its spec.id."""
+        """将已构建好的智能体注册到其 spec.id 之下。"""
         self._agents[agent.id] = agent
         if factory is not None:
             self._factory[agent.id] = factory
@@ -59,7 +57,7 @@ class Runtime:
             self.telemetry.metric("runtime.register", 1.0, agent=agent.id, role=agent.role)
 
     def spawn(self, spec: AgentSpec, factory: Callable[[AgentSpec], Agent]) -> Agent:
-        """Build an agent from a spec via ``factory`` and register it."""
+        """通过 ``factory`` 从 spec 构建一个智能体并注册它。"""
         agent = factory(spec)
         self.register(agent, factory)
         return agent
@@ -77,7 +75,7 @@ class Runtime:
     def __len__(self) -> int:
         return len(self._agents)
 
-    # ---- lifecycle --------------------------------------------------
+    # ---- 生命周期 --------------------------------------------------
     async def start_all(self) -> None:
         for agent in list(self._agents.values()):
             if agent.id in self._intentional_stop:
@@ -87,7 +85,7 @@ class Runtime:
             self.telemetry.metric("runtime.started", float(len(self._agents)))
 
     async def start(self, agent_id: str) -> None:
-        """(Re)start an agent. If it was paused, clears the intentional-stop flag."""
+        """（重新）启动一个智能体。若它曾被暂停，则清除“主动停止”标记。"""
         agent = self._agents.get(agent_id)
         if agent is None:
             raise KeyError(agent_id)
@@ -95,7 +93,7 @@ class Runtime:
         await agent.start()
 
     async def pause(self, agent_id: str) -> None:
-        """Stop an agent's task but keep it registered so it can be resumed."""
+        """停止一个智能体的任务，但保留其注册状态以便稍后恢复。"""
         agent = self._agents.get(agent_id)
         if agent is None:
             raise KeyError(agent_id)
@@ -124,17 +122,17 @@ class Runtime:
             await self.shutdown(agent_id)
         self._running = False
 
-    # ---- harness-level routing -------------------------------------
+    # ---- harness 层级路由 -------------------------------------------
     async def route(self, topic: str, message=None) -> None:
-        """Fan a message out to all subscribers via the bus (await completion)."""
+        """通过总线将消息扇出给所有订阅者（等待完成）。"""
         await self.bus.publish_and_wait(topic, message)
 
-    # ---- abort + supervisor ----------------------------------------
+    # ---- 中止 + 监督器 ---------------------------------------------
     def _on_abort(self, topic: str, message) -> None:
         reason = (message or {}).get("reason", "harness abort")
         self._abort_reason = reason
-        self._log.warning("runtime received harness/abort: %s", reason)
-        # Stop the supervisor loop; run()'s finally block performs the shutdown.
+        self._log.warning("runtime 收到 harness/abort: %s", reason)
+        # 停止监督器循环；run() 的 finally 块负责执行关闭。
         self._running = False
 
     async def _supervise(self) -> None:
@@ -147,37 +145,37 @@ class Runtime:
                 if task is None or not task.done():
                     continue
                 if task.cancelled():
-                    # clean cancellation -> treat as intentional stop
+                    # 干净的取消 -> 视为主动停止
                     self._intentional_stop.add(agent_id)
                     continue
-                # A supervised, long-running agent finishing (whether by a normal
-                # return or an exception swallowed inside Agent._run_loop) has
-                # died and should be kept alive -> bounded restart.
+                # 一个被监督的长期运行智能体结束了（无论是正常返回，还是
+                # 异常被 Agent._run_loop 吞掉），都属于“死亡”，应当保持其存活
+                # -> 进行有限次重启。
                 self._restart_count[agent_id] = self._restart_count.get(agent_id, 0) + 1
                 n = self._restart_count[agent_id]
                 if n > self.max_restarts:
                     self._log.error(
-                        "agent %s exceeded max_restarts=%d; leaving dead",
+                        "智能体 %s 超出 max_restarts=%d；保留为死亡状态",
                         agent_id, self.max_restarts,
                     )
                     self._intentional_stop.add(agent_id)
                     continue
                 self._log.warning(
-                    "supervisor restarting agent %s (attempt %d/%d)",
+                    "监督器正在重启智能体 %s（第 %d/%d 次）",
                     agent_id, n, self.max_restarts,
                 )
                 try:
-                    await agent.stop()  # clear stale subscriptions
+                    await agent.stop()  # 清除过期订阅
                     await agent.start()
                 except Exception:  # noqa: BLE001
-                    self._log.exception("restart failed for %s", agent_id)
+                    self._log.exception("重启 %s 失败", agent_id)
                 if self.telemetry:
                     self.telemetry.metric(
                         "runtime.restart", 1.0, agent=agent_id, attempt=n
                     )
 
     async def run(self) -> None:
-        """Start all agents, watch ``harness/abort``, and run the supervisor until abort."""
+        """启动所有智能体，监听 ``harness/abort``，并运行监督器直到中止。"""
         self._running = True
         self._abort_unsub = self.bus.subscribe("harness/abort", self._on_abort)
         await self.start_all()

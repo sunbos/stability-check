@@ -1,25 +1,25 @@
-"""Governance — access control, quota, circuit breaker, budget enforcement.
+"""治理 —— 访问控制、配额、熔断器、预算执行。
 
-A harness-level guard. It inspects an operation request (a plain dict) and, when a
-policy is breached, publishes ``harness/abort`` — the same single seam the Watchdog
-uses and the ControlLoop listens to — so no loop/multi_agent imports are required. All
-policies are domain-agnostic; a request is described as::
+一种位于 harness 层的守卫。它检查一个操作请求（一个普通字典），当某项
+策略被违反时，发布 ``harness/abort`` —— 这与看门狗使用的、ControlLoop 监听的
+是同一个接缝，因此无需 import loop/multi_agent。所有策略都与领域无关；
+一个请求的描述形如::
 
     {"role": str, "capability": str, "operation": str,
-     "cost": float, "quota_key": str (optional, defaults to role)}
+     "cost": float, "quota_key": str (可选，默认等于 role)}
 
-Components
+组件
 ----------
-- ``AccessControl``  allow/deny by role -> capability -> operation whitelist (default deny).
-- ``Quota``          per-key rolling counter capped at a ceiling.
-- ``Budget``         cumulative spend capped at a ceiling.
-- ``CircuitBreaker`` closed/open/half-open; opens after N consecutive failures.
-- ``Governance``     bundles the above; ``evaluate`` returns (allowed, reason, breaches);
-                     ``enforce`` additionally publishes ``harness/abort`` on breach.
-- ``GovernanceAgent`` optional bus-native wrapper that subscribes to
-  ``harness/govern/request`` and replies allow/deny via req_id.
+- ``AccessControl``  按 role -> capability -> operation 白名单执行允许/拒绝（默认拒绝）。
+- ``Quota``          按 key 的滚动计数器，封顶于一个上限。
+- ``Budget``         累计开销，封顶于一个上限。
+- ``CircuitBreaker`` 关闭/打开/半开；在连续 N 次失败后打开。
+- ``Governance``     将上述组件打包；``evaluate`` 返回 (allowed, reason, breaches)；
+                     ``enforce`` 额外在违反时发布 ``harness/abort``。
+- ``GovernanceAgent`` 可选的、原生挂载于总线的封装，订阅
+  ``harness/govern/request`` 并通过 req_id 回复允许/拒绝。
 
-Engine isolation: imports only from this harness package (bus, agent).
+引擎隔离：仅从本 harness 包（bus、agent）导入。
 """
 
 import logging
@@ -31,7 +31,7 @@ from .bus import EventBus
 
 
 class CircuitBreaker:
-    """Closed / Open / Half-open state machine with cooldown-based recovery."""
+    """基于冷却恢复的 关闭 / 打开 / 半开 状态机。"""
 
     CLOSED = "closed"
     OPEN = "open"
@@ -57,14 +57,14 @@ class CircuitBreaker:
         return self._state
 
     def allow(self) -> bool:
-        """Whether a call is permitted now. May transition OPEN -> HALF_OPEN."""
+        """当前是否允许调用。可能触发 OPEN -> HALF_OPEN 的转移。"""
         if self._state == self.CLOSED:
             return True
         if self._state == self.OPEN:
             if (time.monotonic() - self._opened_at) >= self.cooldown:
                 self._state = self.HALF_OPEN
                 self._probes = 0
-                self._log.info("circuit breaker -> half-open")
+                self._log.info("熔断器 -> 半开")
                 return True
             return False
         # HALF_OPEN
@@ -76,7 +76,7 @@ class CircuitBreaker:
             if self._probes >= self.half_open_probes:
                 self._state = self.CLOSED
                 self._failures = 0
-                self._log.info("circuit breaker -> closed")
+                self._log.info("熔断器 -> 关闭")
         elif self._state == self.OPEN:
             self._state = self.CLOSED
             self._failures = 0
@@ -98,18 +98,18 @@ class CircuitBreaker:
         self._state = self.OPEN
         self._opened_at = time.monotonic()
         self._failures = 0
-        self._log.warning("circuit breaker -> open")
+        self._log.warning("熔断器 -> 打开")
 
 
 class AccessControl:
-    """Default-deny allow/deny by role -> capability -> operation whitelist.
+    """按 role -> capability -> operation 白名单执行的默认拒绝式 允许/拒绝。
 
-    ``policy`` shape::
+    ``policy`` 结构::
 
         {role: {capability: ["op1", "op2"] | "*"}, ...}
 
-    ``"*"`` matches any role/capability/operation. A capability value of ``"*"``
-    allows every operation under that capability.
+    ``"*"`` 匹配任意的 role/capability/operation。某个 capability 的值为 ``"*"``
+    时，允许该 capability 下的所有操作。
     """
 
     def __init__(self, policy: Optional[Dict[str, Dict[str, Any]]] = None, default_deny: bool = True) -> None:
@@ -137,12 +137,12 @@ class AccessControl:
                     return True
                 if operation in ops:
                     return True
-                return False  # explicit capability matched but op not listed -> deny
+                return False  # 明确匹配到 capability 但操作未列出 -> 拒绝
         return None
 
 
 class Quota:
-    """Per-key rolling counter capped at ``limit``. ``window==0`` => cumulative."""
+    """按 key 的滚动计数器，封顶于 ``limit``。``window==0`` 表示累计计数。"""
 
     def __init__(self, limit: int, window: float = 0.0) -> None:
         self.limit = limit
@@ -173,7 +173,7 @@ class Quota:
 
 
 class Budget:
-    """Cumulative spend capped at ``limit``."""
+    """累计开销，封顶于 ``limit``。"""
 
     def __init__(self, limit: float) -> None:
         self.limit = limit
@@ -193,7 +193,7 @@ class Budget:
 
 
 class Governance:
-    """Bundles access/quota/budget/breaker policies and enforces a request gate."""
+    """打包 访问/配额/预算/熔断 策略，并对请求网关进行强制执行。"""
 
     def __init__(
         self,
@@ -216,7 +216,7 @@ class Governance:
         self._log = logging.getLogger("stability_harness_loop_multiagent.governance")
 
     def evaluate(self, req: Dict[str, Any]) -> Tuple[bool, str, List[Tuple[str, str]]]:
-        """Return (allowed, reason, breaches). Side-effecting: consumes quota/budget."""
+        """返回 (allowed, reason, breaches)。有副作用：会消费配额/预算。"""
         breaches: List[Tuple[str, str]] = []
         role = req.get("role", "")
         cap = req.get("capability", "*")
@@ -256,11 +256,11 @@ class Governance:
         return (allowed, reason, breaches)
 
     def enforce(self, req: Dict[str, Any]) -> bool:
-        """Gate: return True only if the request passes every policy."""
+        """网关：仅当请求通过所有策略时才返回 True。"""
         allowed, _reason, _breaches = self.evaluate(req)
         return allowed
 
-    # ---- circuit breaker helpers (explicit, stateful) --------------
+    # ---- 熔断器辅助方法（显式、有状态） --------------
     def breaker_allow(self, name: str) -> bool:
         b = self.breakers.get(name)
         return True if b is None else b.allow()
@@ -276,7 +276,7 @@ class Governance:
 
 
 class GovernanceAgent(Agent):
-    """Bus-native governance gate. Replies allow/deny to ``harness/govern/request``."""
+    """原生挂载于总线的治理网关。对 ``harness/govern/request`` 回复允许/拒绝。"""
 
     def __init__(
         self,

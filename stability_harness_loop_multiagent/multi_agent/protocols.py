@@ -1,10 +1,8 @@
-"""MAS interaction protocols — AdvisorContract, ObserverContract, and the
-weighted vote combiner.
+"""MAS 交互协议 —— AdvisorContract、ObserverContract，以及加权投票合并器。
 
-Advisors are advisory-only: they vote (risk, confidence) and may raise incidents,
-but never decide pass/fail. Observers consume events and report; they never
-decide. combine_votes is the canonical weighted combiner (mirrored locally in
-ControlLoop to preserve engine isolation).
+顾问仅具建议性：它们投票（风险、置信度）并可能提出事件，但绝不裁决通过/失败。
+观察者消费事件并上报；它们绝不裁决。combine_votes 是规范的加权合并器
+（在 ControlLoop 中本地镜像了一份，以保留引擎隔离）。
 """
 
 from typing import Any, List, Protocol, Tuple, runtime_checkable
@@ -13,22 +11,22 @@ from typing import Any, List, Protocol, Tuple, runtime_checkable
 @runtime_checkable
 class AdvisorContract(Protocol):
     def on_round(self, round_info: Any) -> None:
-        """Called when a loop round completes (subscribed to loop/done)."""
+        """当一个循环轮次完成时调用（订阅了 loop/done）。"""
         ...
 
     def vote(self) -> Tuple[float, float]:
-        """Return (risk_score, confidence). confidence<=0 means abstain."""
+        """返回 (risk_score, confidence)。confidence<=0 表示弃权。"""
         ...
 
     def raise_incident(self, severity: str, detail: Any) -> None:
-        """Raise an incident (warn/critical) onto the bus."""
+        """在总线上提出一个事件（warn/critical）。"""
         ...
 
 
 @runtime_checkable
 class ObserverContract(Protocol):
     def on_event(self, event: Any) -> None:
-        """Consume an event for reporting/notification. Never decides."""
+        """消费一个事件用于上报/通知。绝不裁决。"""
         ...
 
 
@@ -37,16 +35,16 @@ def combine_votes(
     default_neutral: float = 50.0,
     fast_path_risk: float = 90.0,
 ) -> float:
-    """Weighted, confidence-scaled vote combination.
+    """带置信度加权的投票合并。
 
-    ``votes`` is a list of either:
-      - (risk, confidence) tuples, or
-      - (risk, confidence, weight) tuples, or
-      - dicts with keys risk/confidence/weight.
-    Rules:
-      - fast path: any risk >= fast_path_risk wins immediately.
-      - confidence <= 0 => abstain (weight treated as 0).
-      - all abstain => default_neutral (50).
+    ``votes`` 是一个列表，每个元素为以下之一：
+      - (risk, confidence) 元组，或
+      - (risk, confidence, weight) 元组，或
+      - 带有 risk/confidence/weight 键的字典。
+    规则：
+      - 快速路径：任意 risk >= fast_path_risk 立即胜出。
+      - confidence <= 0 => 弃权（权重视为 0）。
+      - 全部弃权 => default_neutral（50）。
     """
     norm: List[Tuple[float, float, float]] = []
     for v in votes:
@@ -63,7 +61,7 @@ def combine_votes(
             w = float(items[2]) if len(items) > 2 else 1.0
             norm.append((risk, conf, w))
 
-    for risk, conf, _w in norm:  # fast path
+    for risk, conf, _w in norm:  # 快速路径
         if risk >= fast_path_risk:
             return risk
 

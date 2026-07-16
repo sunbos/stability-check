@@ -1,8 +1,7 @@
-"""TargetAdapter — the contract for the object the MAS acts upon.
+"""TargetAdapter —— MAS 所操作对象的契约。
 
-Generic, scenario-agnostic. A concrete scenario implements this protocol
-(e.g. a device, service, or resource adapter) and registers WorkerAgents that
-drive it. The loop engine never imports this; workers do.
+通用、与领域无关。一个具体场景实现该协议（例如某个设备、服务或资源适配器），
+并注册驱动它的 WorkerAgent。循环引擎从不导入它；由各工作者导入。
 """
 
 from dataclasses import dataclass, field
@@ -11,7 +10,7 @@ from typing import Any, List, Protocol, runtime_checkable
 
 @dataclass
 class Event:
-    """A domain event observed from the target."""
+    """从目标观测到的一个领域事件。"""
 
     kind: str
     payload: Any = None
@@ -20,7 +19,7 @@ class Event:
 
 @dataclass
 class Result:
-    """Outcome of an act() operation."""
+    """一次 act() 操作的结果。"""
 
     ok: bool
     data: Any = None
@@ -29,7 +28,7 @@ class Result:
 
 @dataclass
 class State:
-    """A point-in-time observation of the target."""
+    """目标在某一时刻的观测快照。"""
 
     snapshot: Any = None
 
@@ -37,15 +36,15 @@ class State:
 @runtime_checkable
 class TargetAdapter(Protocol):
     def act(self, operation: Any) -> Result:
-        """Perform an operation on the target. Returns a Result."""
+        """在目标上执行一个操作。返回一个 Result。"""
         ...
 
     def observe(self) -> State:
-        """Observe the target's current state."""
+        """观测目标当前的状态。"""
         ...
 
     def events(self, since: float) -> List[Event]:
-        """Return events occurring at or after ``since`` (epoch seconds)."""
+        """返回在 ``since``（epoch 秒）及其之后发生的事件。"""
         ...
 
 

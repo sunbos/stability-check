@@ -1,8 +1,8 @@
-"""WorkerAgent — execution role of the MAS.
+"""WorkerAgent —— MAS 中的执行角色。
 
-Performs domain operations through a TargetAdapter. Reacts to ``loop/tick``,
-then publishes ``target/acted``, ``target/recovered``, ``target/checked`` and
-``agent/<role>/done``. Subclass and override ``do_work`` / ``recover`` / ``check``.
+通过 TargetAdapter 执行领域操作。响应 ``loop/tick``，随后发布 ``target/acted``、
+``target/recovered``、``target/checked`` 以及 ``agent/<role>/done``。子类化并
+覆盖 ``do_work`` / ``recover`` / ``check``。
 """
 
 import asyncio
@@ -16,7 +16,7 @@ from ..adapter import TargetAdapter
 class WorkerAgent(Agent):
     def __init__(self, bus: EventBus, spec: AgentSpec, adapter: TargetAdapter) -> None:
         if "loop/tick" not in spec.subscriptions:
-            spec.subscriptions.append("loop/tick")  # workers act on ticks
+            spec.subscriptions.append("loop/tick")  # 工作者在 tick 上行动
         super().__init__(bus, spec)
         self.adapter = adapter
 
@@ -25,7 +25,7 @@ class WorkerAgent(Agent):
             await self.act(message or {})
 
     async def act(self, tick: dict) -> None:
-        """Default pipeline: act -> recover -> check. Override for specifics."""
+        """默认流水线：act -> recover -> check。针对具体场景覆盖。"""
         result = self.do_work(tick)
         self.publish(
             "target/acted",
@@ -44,15 +44,15 @@ class WorkerAgent(Agent):
         self.publish("agent/" + self.role + "/done", {"round": tick.get("round")})
 
     def do_work(self, tick: dict):
-        """Override: invoke adapter.act(operation). Return anything (logged)."""
+        """覆盖：调用 adapter.act(operation)。返回任意值（会被记录）。"""
         return self.adapter.act(tick.get("operation"))
 
     async def recover(self, tick: dict) -> bool:
-        """Override: poll adapter.observe() until stable; default True."""
+        """覆盖：轮询 adapter.observe() 直到稳定；默认返回 True。"""
         return True
 
     def check(self, tick: dict) -> dict:
-        """Override: return {fact_name: bool, ...} for the DecisionAuthority."""
+        """覆盖：为 DecisionAuthority 返回 {fact_name: bool, ...}。"""
         return {}
 
 

@@ -1,13 +1,13 @@
-"""EventBus — the only cross-engine communication seam.
+"""EventBus —— 唯一的跨引擎通信接缝。
 
-In-process async implementation. Standard library only.
-- publish(topic, msg): fire-and-forget; handlers scheduled via create_task.
-- publish_and_wait(topic, msg): awaits all handlers (sync guarantee).
-- subscribe(topic, handler): handler may be sync or async. Returns an
-  unsubscribe callable. Trailing '#' wildcard (e.g. "a/#" matches "a", "a/b").
-- request(topic, msg, timeout): publish and await the first reply correlated
-  by req_id. Responder calls bus.reply(req_id, response). Timeout -> TimeoutError.
-- Handler exceptions are logged, never propagated to the publisher.
+进程内异步实现。仅使用标准库。
+- publish(topic, msg)：发送即忘；处理器通过 create_task 调度。
+- publish_and_wait(topic, msg)：等待所有处理器完成（提供同步保证）。
+- subscribe(topic, handler)：处理器可为同步或异步。返回一个
+  取消订阅的可调用对象。支持尾随 '#' 通配符（例如 "a/#" 匹配 "a"、"a/b"）。
+- request(topic, msg, timeout)：发布并等待由 req_id 关联的首次回复。
+  响应方调用 bus.reply(req_id, response)。超时则抛出 TimeoutError。
+- 处理器的异常会被记录，绝不向上传播给发布者。
 """
 
 import asyncio
@@ -18,13 +18,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 
 def _match(sub_topic: str, pub_topic: str) -> bool:
-    """Return True if a subscription topic matches a published topic."""
+    """判断某个订阅主题是否匹配已发布的主题。"""
     if sub_topic == pub_topic:
         return True
     if sub_topic.endswith("#"):
         prefix = sub_topic[:-1]  # "a/#" -> "a/"
         if prefix == "":
-            return True  # bare "#" matches everything
+            return True  # 单独的 "#" 匹配一切
         if pub_topic == prefix.rstrip("/"):
             return True
         return pub_topic.startswith(prefix)
@@ -37,9 +37,9 @@ class EventBus:
         self._reply_waiters: Dict[str, "asyncio.Future"] = {}
         self._log = logger or logging.getLogger("stability_harness_loop_multiagent.bus")
 
-    # ---- subscription -------------------------------------------------
+    # ---- 订阅 ---------------------------------------------------------
     def subscribe(self, topic: str, handler: Callable) -> Callable[[], None]:
-        """Register handler for topic. Returns an unsubscribe callable."""
+        """为某个主题注册处理器。返回一个取消订阅的可调用对象。"""
         self._handlers.setdefault(topic, []).append(handler)
 
         def unsubscribe() -> None:
@@ -54,16 +54,16 @@ class EventBus:
         if lst and handler in lst:
             lst.remove(handler)
 
-    # ---- reply correlation -------------------------------------------
+    # ---- 回复关联 -----------------------------------------------------
     def reply(self, req_id: str, message: Any) -> None:
-        """Resolve a pending request future identified by req_id."""
+        """解除一个由 req_id 标识的待处理请求 future。"""
         fut = self._reply_waiters.get(req_id)
         if fut is not None and not fut.done():
             fut.set_result(message)
 
-    # ---- publish ------------------------------------------------------
+    # ---- 发布 ---------------------------------------------------------
     def publish(self, topic: str, message: Any = None) -> None:
-        """Fire-and-forget broadcast to all matching handlers."""
+        """向所有匹配的处理器广播（发送即忘）。"""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -72,7 +72,7 @@ class EventBus:
             loop.create_task(self._run_handler(handler, topic, message))
 
     async def publish_and_wait(self, topic: str, message: Any = None) -> None:
-        """Broadcast and await completion of every handler."""
+        """广播并等待每个处理器完成。"""
         tasks = [
             self._run_handler(handler, topic, message)
             for handler in self._matching(topic)
@@ -83,7 +83,7 @@ class EventBus:
     async def request(
         self, topic: str, message: Any = None, timeout: float = 1.0
     ) -> Any:
-        """Publish and await the first reply correlated by req_id."""
+        """发布并等待由 req_id 关联的首次回复。"""
         req_id = secrets.token_hex(8)
         if isinstance(message, dict):
             envelope = dict(message)
@@ -99,7 +99,7 @@ class EventBus:
         finally:
             self._reply_waiters.pop(req_id, None)
 
-    # ---- internals ----------------------------------------------------
+    # ---- 内部实现 -----------------------------------------------------
     def _matching(self, topic: str) -> List[Callable]:
         out: List[Callable] = []
         for sub_topic, handlers in self._handlers.items():
@@ -112,8 +112,8 @@ class EventBus:
             result = handler(topic, message)
             if asyncio.iscoroutine(result):
                 await result
-        except Exception:  # noqa: BLE001 - isolation: never leak to publisher
-            self._log.exception("bus handler error on topic=%r", topic)
+        except Exception:  # noqa: BLE001 - 隔离：绝不泄漏给发布者
+            self._log.exception("bus 处理器出错 on topic=%r", topic)
 
 
 __all__ = ["EventBus"]

@@ -1,28 +1,27 @@
-"""DecisionAuthority — the loop's sole, deterministic verdict authority.
+"""DecisionAuthority —— 循环唯一的、确定性的裁决权。
 
-Fact dictatorship (safety floor): if ANY fact is False the verdict is ``fail``,
-and risk score can NEVER upgrade it to pass. Risk only adds ``warn``/``recheck``
-annotations. A critical incident forces ``recheck``. On error, defaults to a
-conservative ``warn(60)`` rather than an optimistic pass.
+事实独裁（安全底线）：如果任何一个事实为 False，裁决即为 ``fail``，且风险分数
+永远无法将其升级为 pass。风险只会附加 ``warn``/``recheck`` 注解。一个
+关键事件会强制产生 ``recheck``。出错时，默认退回一个保守的 ``warn(60)``，
+而非乐观的 pass。
 
-Verdict.decision ∈ {pass, warn, recheck, fail, abort}.
+Verdict.decision ∈ {pass, warn, recheck, fail, abort}。
 
-Coherence rules (safety floor):
-  - critical incident            -> recheck   (cannot be downgraded)
-  - voting timeout (no votes)   -> neutral risk 50 (see ``NEUTRAL_RISK``); the
-                                    loop's vote combiner returns this when every
-                                    advisor abstains / is silent, so the matrix
-                                    treats it as a clean pass on facts.
-  - decision error              -> conservative warn(60) (``CONSERVATIVE_RISK``),
-                                    never an optimistic pass.
+一致性规则（安全底线）：
+  - 关键事件            -> recheck   （不可被降级）
+  - 投票超时（无投票）  -> 中性风险 50（见 ``NEUTRAL_RISK``）；当每个顾问都
+                            弃权/沉默时，循环的投票合并器会返回该值，于是矩阵
+                            在事实层面将其当作一次干净的通过。
+  - 决策错误           -> 保守的 warn(60)（``CONSERVATIVE_RISK``），
+                            绝不采用乐观的通过。
 """
 
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping
 
-# Neutral risk when no advisor votes in time (voting timeout / all abstain).
+# 当没有顾问及时投票时（投票超时 / 全部弃权）使用的中性风险值。
 NEUTRAL_RISK: float = 50.0
-# Conservative risk assigned when the decision path errors out.
+# 当决策路径出错时所采用的保守风险值。
 CONSERVATIVE_RISK: float = 60.0
 
 
@@ -47,11 +46,11 @@ class Verdict:
 
 
 class DecisionAuthority:
-    """Deterministic decision matrix.
+    """确定性的决策矩阵。
 
-    ``facts`` maps fact-name -> bool (True == satisfied). Any False => fail.
-    Risk ranges: <60 pass, 60-80 warn, >80 recheck. Critical forces recheck.
-    ``error=True`` returns a conservative warn(60).
+    ``facts`` 将事实名映射到 bool（True == 已满足）。任意一个 False => fail。
+    风险区间：<60 为 pass，60-80 为 warn，>80 为 recheck。关键事件强制 recheck。
+    ``error=True`` 时返回保守的 warn(60)。
     """
 
     def decide(
@@ -64,28 +63,28 @@ class DecisionAuthority:
         if error:
             return Verdict(
                 "warn", risk_score=CONSERVATIVE_RISK, critical=critical,
-                reason="decision error -> conservative warn(60)",
+                reason="决策错误 -> 保守 warn(60)",
             )
 
-        # Fact dictatorship: any unsatisfied / falsy fact => fail.
+        # 事实独裁：任何未满足 / 为 falsy 的事实 => fail。
         for name, ok in (facts or {}).items():
             if not ok:
                 return Verdict(
                     "fail", risk_score=risk_score, critical=critical,
-                    reason=f"fact failed: {name}",
+                    reason=f"事实未满足: {name}",
                 )
 
         if critical:
             return Verdict(
                 "recheck", risk_score=risk_score, critical=True,
-                reason="critical incident -> recheck",
+                reason="关键事件 -> recheck",
             )
 
         if risk_score > 80:
-            return Verdict("recheck", risk_score=risk_score, reason="risk > 80")
+            return Verdict("recheck", risk_score=risk_score, reason="风险 > 80")
         if risk_score >= 60:
-            return Verdict("warn", risk_score=risk_score, reason="risk 60-80")
-        return Verdict("pass", risk_score=risk_score, reason="all facts ok, low risk")
+            return Verdict("warn", risk_score=risk_score, reason="风险 60-80")
+        return Verdict("pass", risk_score=risk_score, reason="所有事实满足，风险低")
 
 
 __all__ = ["DecisionAuthority", "Verdict", "NEUTRAL_RISK", "CONSERVATIVE_RISK"]

@@ -1,11 +1,10 @@
-"""ScribeAgent — observer that records a private timeline + summary.
+"""ScribeAgent —— 保有私有时间线 + 摘要的观察者。
 
-Subscribes to round / incident / abort events and keeps its OWN timeline; it
-never touches the shared loop context and never decides anything. It can also
-answer a ``scribe/summary/request`` by publishing ``scribe/summary`` with an
-aggregated summary (decision distribution, risk stats, incident counts).
+订阅轮次 / 事件 / 中止事件，并保有它*自己的*时间线；它绝不触及共享的循环
+上下文，也绝不裁决任何东西。它还能通过发布 ``scribe/summary`` 来回应
+``scribe/summary/request``，附带一份聚合摘要（决策分布、风险统计、事件计数）。
 
-Pure observation: safe to add or remove without affecting loop behaviour.
+纯观察：可安全地添加或移除，而不会影响循环行为。
 """
 
 import logging
@@ -18,7 +17,7 @@ from .base import ObserverAgent
 
 
 class ScribeAgent(ObserverAgent):
-    # topics this observer cares about (auto-wired if not already present)
+    # 本观察者关心的主题（若尚未存在则自动接入）
     DEFAULT_SUBSCRIPTIONS = (
         "loop/done",
         "agent/incident",
@@ -34,7 +33,7 @@ class ScribeAgent(ObserverAgent):
         self._timeline: list = []
         self._log = logging.getLogger(f"stability_harness_loop_multiagent.multi_agent.observer.{self.role}")
 
-    # ---- record -------------------------------------------------------
+    # ---- 记录 -------------------------------------------------------
     def on_event(self, topic: str, message) -> None:
         msg = message if isinstance(message, dict) else {"payload": message}
         self._timeline.append({"topic": topic, "message": msg, "ts": time.time()})
@@ -44,7 +43,7 @@ class ScribeAgent(ObserverAgent):
                 {"summary": self.summary(), "req_id": msg.get("req_id")},
             )
 
-    # ---- summary ------------------------------------------------------
+    # ---- 摘要 -------------------------------------------------------
     def summary(self) -> dict:
         rounds = [e["message"] for e in self._timeline if e["topic"] == "loop/done"]
         incidents = [e["message"] for e in self._timeline if e["topic"] == "agent/incident"]
@@ -67,7 +66,7 @@ class ScribeAgent(ObserverAgent):
 
     @property
     def timeline(self) -> list:
-        """Read-only copy of the private event timeline."""
+        """私有事件时间线的只读副本。"""
         return list(self._timeline)
 
 

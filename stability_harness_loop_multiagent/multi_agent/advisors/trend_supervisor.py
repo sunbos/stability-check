@@ -1,16 +1,13 @@
-"""TrendSupervisorAgent — advisory trend monitor (autonomous L3-style role).
+"""TrendSupervisorAgent —— 建议性趋势监视器（类自主 L3 角色）。
 
-Keeps a PRIVATE window of round outcomes gathered from ``loop/done`` — it never
-reads the shared loop context directly (self-contained autonomous state). On each
-round it appends to its window; a *proactive* timer (every ``check_interval``
-seconds, default 30) re-scans the window for harmful trends and may raise an
-incident. It also responds to ``loop/vote/request`` with a weighted
-``(risk, confidence)`` vote.
+保有从 ``loop/done`` 收集的、*私有*的轮次结果窗口 —— 它绝不直接读取共享的循环
+上下文（自包含的自主状态）。每轮它向窗口追加数据；一个*主动*定时器（每
+``check_interval`` 秒，默认 30）重新扫描窗口以发现有害趋势，并可能提出事件。
+它也会针对 ``loop/vote/request`` 投出带权重的 ``(risk, confidence)`` 票。
 
-ADVISORY ONLY: it never decides pass/fail. The loop's DecisionAuthority is the
-sole arbiter. Its risk score only *annotates* (warn/recheck), and a ``critical``
-incident forces the loop to recheck. This mirrors the autonomy principle:
-agents watch independently and alert, they do not rule.
+仅具建议性：它绝不裁决通过/失败。循环的 DecisionAuthority 是唯一仲裁者。其
+风险分数只起*注解*作用（warn/recheck），而一个 ``critical`` 事件会强制循环
+重新检查。这呼应了自治原则：各智能体独立监视并告警，它们不统治。
 """
 
 import asyncio
@@ -46,28 +43,28 @@ class TrendSupervisorAgent(AdvisorAgent):
         self.spike_factor = spike_factor
         self.stale_timeout = stale_timeout
 
-        self._window: list = []            # private: list of round dicts
+        self._window: list = []            # 私有：轮次字典列表
         self._last_round_ts: float = 0.0
         self._log = logging.getLogger(f"stability_harness_loop_multiagent.multi_agent.advisor.{self.role}")
 
-    # ---- reactive: round intake (loop/done) --------------------------
+    # ---- 响应式：轮次摄入（loop/done） -----------------------------
     def on_round(self, round_info: dict) -> None:
         self._window.append(round_info or {})
         if len(self._window) > 200:
             self._window.pop(0)
         self._last_round_ts = time.time()
 
-    # ---- proactive timer loop ----------------------------------------
+    # ---- 主动定时器循环 -------------------------------------------
     async def run(self) -> None:
         while self._running:
             await asyncio.sleep(self.check_interval)
             try:
                 self._proactive_check()
-            except Exception:  # noqa: BLE001 - isolation: never kill the agent
-                self._log.exception("proactive check error")
+            except Exception:  # noqa: BLE001 - 隔离：绝不杀死该智能体
+                self._log.exception("主动检查出错")
 
     def _proactive_check(self) -> None:
-        # stale-data alert: no new round for a while -> warn
+        # 陈旧数据告警：一段时间没有新轮次 -> warn
         if self._last_round_ts and (time.time() - self._last_round_ts) > self.stale_timeout:
             self.raise_incident(
                 "warn",
@@ -81,14 +78,14 @@ class TrendSupervisorAgent(AdvisorAgent):
         if inc is not None:
             self.raise_incident(inc["severity"], inc["detail"])
 
-    # ---- trend detection (private window) ----------------------------
+    # ---- 趋势检测（私有窗口） -------------------------------------
     def _detect_trend(self):
         if len(self._window) < 2:
             return None
         risks = [float(r.get("risk", 50.0)) for r in self._window]
         verdicts = [r.get("verdict", "") for r in self._window]
 
-        # consecutive strictly-increasing risk streak, counted from the end
+        # 从末尾开始计数的、严格递增的风险连续序列
         inc_streak = 0
         for a, b in zip(reversed(risks[1:]), reversed(risks[:-1])):
             if b > a:
@@ -107,14 +104,14 @@ class TrendSupervisorAgent(AdvisorAgent):
                 "detail": {"kind": "increasing_risk", "streak": inc_streak},
             }
 
-        # failure-rate crossing upward through the threshold
+        # 失败率向上穿越阈值
         if len(self._window) >= self.min_samples:
             fails = sum(1 for v in verdicts if v in ("fail", "abort"))
             rate = fails / len(self._window)
             if rate > self.fail_rate_threshold:
                 return {"severity": "warn", "detail": {"kind": "fail_rate", "rate": rate}}
 
-        # risk spike > spike_factor x the recent mean
+        # 风险尖峰 > 近期均值 的 spike_factor 倍
         recent = risks[-self.min_samples:]
         mean = sum(recent) / len(recent)
         if mean > 0 and risks[-1] > self.spike_factor * mean:
@@ -124,10 +121,10 @@ class TrendSupervisorAgent(AdvisorAgent):
             }
         return None
 
-    # ---- vote (risk, confidence) -------------------------------------
+    # ---- 投票（risk, confidence） ---------------------------------
     def vote(self) -> tuple:
         if len(self._window) < 2:
-            return (20.0, 0.3)  # thin data -> low risk, low confidence
+            return (20.0, 0.3)  # 数据稀薄 -> 低风险、低置信度
         risks = [float(r.get("risk", 50.0)) for r in self._window]
         verdicts = [r.get("verdict", "") for r in self._window]
 

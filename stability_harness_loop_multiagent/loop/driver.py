@@ -1,16 +1,16 @@
-"""ControlLoop — the deterministic loop engine (sense->plan->act->check->decide->halt).
+"""ControlLoop —— 确定性的循环引擎（感测->规划->执行->检查->裁决->停止）。
 
-Drives entirely through the bus (no direct engine imports). It:
-  - publishes ``loop/tick`` (sense/plan/act trigger for workers),
-  - gathers ``target/recovered`` and ``target/checked`` facts (with timeouts),
-  - requests votes via ``loop/vote/request`` and gathers ``agent/vote/reply``,
-  - applies the DecisionAuthority, appends a RoundRecord to SharedContext,
-  - publishes ``loop/done``; on recheck publishes ``loop/recheck`` (max once);
-  - acks every incident raised by others, and halts on termination/harness/abort.
+完全通过事件总线驱动（无直接的引擎 import）。它会：
+  - 发布 ``loop/tick``（触发工作者的感测/规划/执行），
+  - 收集 ``target/recovered`` 与 ``target/checked`` 事实（带超时），
+  - 通过 ``loop/vote/request`` 请求投票并收集 ``agent/vote/reply``，
+  - 应用 DecisionAuthority，向 SharedContext 追加一条 RoundRecord，
+  - 发布 ``loop/done``；若为 recheck 则发布 ``loop/recheck``（最多一次）；
+  - 对其他人提出的事件进行 ack，并在终止/harness/abort 时停止。
 
-Holds the authoritative verdict. Risk combination is a local deterministic
-helper (engine-isolation: the canonical ``combine_votes`` lives in multi_agent/protocols
-for MAS-side aggregation; this loop keeps its own to avoid importing multi_agent).
+持有权威裁决结果。风险合并是一个本地的确定性辅助函数（引擎隔离：规范的
+``combine_votes`` 位于 multi_agent/protocols，用于 MAS 侧的聚合；本循环保留
+自己的实现以避免导入 multi_agent）。
 """
 
 import asyncio
@@ -71,9 +71,8 @@ class ControlLoop(Agent):
         self.check_timeout = check_timeout
         self.recheck_limit = recheck_limit
         self.combine = combine or self._default_combine
-        # Pacing/backoff/retry-budget engine. Defaults keep the loop safe: a
-        # 1s base interval avoids a busy-spin, and the adaptive formula stretches
-        # the cooldown for slow targets automatically.
+        # 节奏/退避/重试预算引擎。默认值让循环保持安全：1 秒的基础间隔避免了
+        # 忙等待自旋，自适应公式会为较慢的目标自动拉长冷却时间。
         self.scheduler = scheduler or Scheduler()
         self.telemetry = telemetry
 
@@ -85,12 +84,12 @@ class ControlLoop(Agent):
         self._stop = False
         self._log = logging.getLogger("stability_harness_loop_multiagent.loop")
 
-    # ---- authoritative verdict ---------------------------------------
+    # ---- 权威裁决结果 ------------------------------------------------
     @property
     def verdict(self) -> Optional[Verdict]:
         return self._verdict
 
-    # ---- main loop ----------------------------------------------------
+    # ---- 主循环 ------------------------------------------------------
     async def run(self) -> None:
         while not self._stop:
             halt, reason = self.termination.should_halt(self.ctx.snapshot())
@@ -100,22 +99,21 @@ class ControlLoop(Agent):
             recover_time = await self._run_round()
             if self.ctx.aborted:
                 break
-            # Pace the loop to the next round using the scheduler. A slow target
-            # (large recover_time) gets a longer cooldown automatically; a fast
-            # one stays compact. This is the loop's only inter-round wait, so a
-            # stuck scheduler can't deadlock the loop.
+            # 使用调度器为循环进入下一轮定速。较慢的目标（较大的 recover_time）
+            # 会自动获得更长的冷却时间；较快的目标则保持紧凑。这是循环唯一的
+            # 轮间等待，因此一个卡住的调度器无法让循环死锁。
             interval = self.scheduler.interval(recover_time)
             if interval and interval > 0:
                 await asyncio.sleep(interval)
 
-    # ---- one iteration ------------------------------------------------
+    # ---- 单次迭代 ----------------------------------------------------
     async def _run_round(self) -> Optional[float]:
         self._round_no += 1
         if self.telemetry:
             self.telemetry.metric("loop.round", self._round_no)
 
-        # Subscribe synchronously BEFORE publishing loop/tick, so the worker's
-        # fire-and-forget target/* publications are never missed.
+        # 在发布 loop/tick 之前同步订阅，这样工作者发送即忘的 target/* 发布
+        # 绝不会被遗漏。
         recover_time: Optional[float] = None
         rec_start = time.time()
 
@@ -141,10 +139,10 @@ class ControlLoop(Agent):
             critical = self._has_critical
             verdict = self.decision.decide(facts, risk, critical)
         except Exception:  # noqa: BLE001
-            # Conservative fallback: never an optimistic pass. Voting timeout /
-            # all-abstain already yields NEUTRAL_RISK=50 via combine; here we
-            # guard the whole decide path and fall back to warn(60).
-            self._log.exception("decision error -> conservative warn(60)")
+            # 保守回退：绝不采用乐观的通过。投票超时 / 全部弃权已经通过 combine
+            # 得到 NEUTRAL_RISK=50；这里我们对整条 decide 路径做保护并回退到
+            # warn(60)。
+            self._log.exception("决策错误 -> 保守 warn(60)")
             try:
                 verdict = self.decision.decide(
                     facts, NEUTRAL_RISK, self._has_critical, error=True
@@ -154,7 +152,7 @@ class ControlLoop(Agent):
                 verdict = Verdict(
                     "warn", risk_score=CONSERVATIVE_RISK,
                     critical=self._has_critical,
-                    reason="decision error -> conservative warn(60)",
+                    reason="决策错误 -> 保守 warn(60)",
                 )
                 risk = CONSERVATIVE_RISK
         self._verdict = verdict
@@ -189,14 +187,14 @@ class ControlLoop(Agent):
                 round=self._round_no,
             )
 
-        # recheck (bounded)
+        # recheck（有界）
         if verdict.decision == "recheck" and self._recheck_pending < self.recheck_limit:
             self._recheck_pending += 1
             self.bus.publish("loop/recheck", {"round": self._round_no})
         else:
             self._recheck_pending = 0
 
-        # ack incidents raised by others (never our own)
+        # 对其他人（绝不自己）提出的事件进行 ack
         for inc in self._incidents:
             self.bus.publish(
                 "agent/incident/ack",
@@ -206,7 +204,7 @@ class ControlLoop(Agent):
         self._has_critical = False
         return recover_time
 
-    # ---- incoming events ---------------------------------------------
+    # ---- 入站事件 ----------------------------------------------------
     async def handle(self, topic: str, message: Any) -> None:
         if topic == "agent/incident":
             sev = (message or {}).get("severity", "warn")
@@ -217,20 +215,19 @@ class ControlLoop(Agent):
             reason = (message or {}).get("reason", "watchdog abort")
             self._halt(reason)
         elif topic == "loop/recheck":
-            pass  # recheck is driven from within _run_round
+            pass  # recheck 由 _run_round 内部驱动
 
-    # ---- helpers ------------------------------------------------------
+    # ---- 辅助方法 ----------------------------------------------------
     def _halt(self, reason: str) -> None:
         self._stop = True
         self.ctx.mark_aborted(reason)
         self.bus.publish("loop/abort", {"reason": reason})
 
     def _start_collect(self, reply_topic: str, on_first=None):
-        """Synchronously subscribe a collector; returns (unsub, buffer).
+        """同步订阅一个收集器；返回 (unsub, buffer)。
 
-        ``on_first`` (optional callable(msg)) is invoked once on the first
-        matching message — used to timestamp target recovery without coupling
-        the collector buffer to timing logic.
+        ``on_first``（可选的可调用对象(msg)）会在首条匹配消息到达时被调用一次
+        —— 用于对目标恢复打时间戳，而不将收集器缓冲区与计时逻辑耦合。
         """
         buf: List[Any] = []
         seen = {"first": False}
@@ -267,8 +264,8 @@ class ControlLoop(Agent):
             if isinstance(msg, dict):
                 facts.update(msg.get("facts", {}) or {})
         if not facts:
-            facts["checks_received"] = False  # no worker checked -> fail
-        # recovery: any False (or no reply) => not recovered
+            facts["checks_received"] = False  # 没有工作者检查 -> fail
+        # 恢复情况：任意 False（或无回复）=> 未恢复
         if recovered_list:
             recovered = all(
                 (m.get("recovered") if isinstance(m, dict) else bool(m))
@@ -281,7 +278,7 @@ class ControlLoop(Agent):
 
     @staticmethod
     def _default_combine(votes: List[Dict[str, Any]]) -> float:
-        # fast-path: any risk >= 90 wins immediately
+        # 快速路径：任意 risk >= 90 立即胜出
         for v in votes:
             if v.get("risk", 0) >= 90:
                 return float(v["risk"])
@@ -291,24 +288,23 @@ class ControlLoop(Agent):
             risk = float(v.get("risk", 50.0))
             conf = float(v.get("confidence", 0.0))
             w = float(v.get("weight", 1.0))
-            if conf <= 0:  # abstain
+            if conf <= 0:  # 弃权
                 continue
             num += risk * w * conf
             den += w * conf
         if den == 0:
-            return 50.0  # neutral default when all abstain
+            return 50.0  # 全部弃权时的中性默认值
         return num / den
 
 
 @dataclass
 class RunConfig:
-    """Declarative control-loop run parameters (generic vocabulary).
+    """声明式的控制循环运行参数（通用词汇表）。
 
-    Maps high-level knobs onto a ``TerminationPolicy`` + the ``ControlLoop``
-    timeouts. No concrete scenario is baked in — the caller supplies the
-    worker / advisor / observer / adapter. ``max_duration=0`` (default)
-    disables the duration stop; ``fail_threshold=0`` disables the fail stop;
-    both are OR-combined with ``max_rounds`` (always honoured when > 0).
+    将高层旋钮映射到 ``TerminationPolicy`` + ``ControlLoop`` 的超时。
+    不内置任何具体场景 —— 由调用方提供工作者 / 顾问 / 观察者 / 适配器。
+    ``max_duration=0``（默认）会禁用“时长停止”；``fail_threshold=0`` 会禁用
+    “失败停止”；二者都与 ``max_rounds`` 以 OR 方式组合（只要 > 0 就始终生效）。
     """
 
     max_rounds: int = 10

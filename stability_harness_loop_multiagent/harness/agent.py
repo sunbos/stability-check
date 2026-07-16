@@ -1,9 +1,9 @@
-"""Agent base + AgentSpec — engine-neutral registration metadata and lifecycle.
+"""智能体基类与 AgentSpec —— 与引擎无关的注册元数据和生命周期。
 
-An Agent holds a bus reference and a private state dict. It never reaches into
-another agent directly; all interaction goes through the bus. Subscriptions
-declared in the spec are wired to ``handle`` on ``start``. Override ``run`` for
-proactive behaviour (self-driven loops), or ``handle`` to react to topics.
+一个 Agent 持有一个事件总线引用和一个私有状态字典。它绝不会直接访问
+另一个 Agent；所有交互都通过事件总线完成。在 spec 中声明的订阅会在
+``start`` 时绑定到 ``handle``。覆盖 ``run`` 实现主动行为（自驱循环），
+或覆盖 ``handle`` 以响应主题。
 """
 
 import asyncio
@@ -16,7 +16,7 @@ from .bus import EventBus
 
 @dataclass
 class AgentSpec:
-    """Engine-neutral metadata describing an agent's role and wiring."""
+    """描述一个智能体角色与连接方式的、与引擎无关的元数据。"""
 
     id: str
     role: str
@@ -29,13 +29,13 @@ class Agent:
     def __init__(self, bus: EventBus, spec: AgentSpec) -> None:
         self.bus = bus
         self.spec = spec
-        self.state: Dict[str, Any] = {}  # private, never shared
+        self.state: Dict[str, Any] = {}  # 私有状态，绝不共享
         self._task: Optional["asyncio.Task"] = None
         self._running = False
         self._subscriptions: List[Callable[[], None]] = []
         self._log = logging.getLogger(f"stability_harness_loop_multiagent.agent.{spec.role}")
 
-    # ---- identity -----------------------------------------------------
+    # ---- 身份标识 -----------------------------------------------------
     @property
     def id(self) -> str:
         return self.spec.id
@@ -44,7 +44,7 @@ class Agent:
     def role(self) -> str:
         return self.spec.role
 
-    # ---- bus helpers --------------------------------------------------
+    # ---- 总线辅助方法 --------------------------------------------------
     def subscribe(self, topic: str, handler: Callable) -> Callable[[], None]:
         return self.bus.subscribe(topic, handler)
 
@@ -57,19 +57,19 @@ class Agent:
         return await self.bus.request(topic, message, timeout)
 
     def respond(self, incoming: Any, response: Any) -> None:
-        """Reply to a request given the message that carried its req_id."""
+        """根据携带 req_id 的消息，对某个请求做出回复。"""
         req_id = incoming.get("req_id") if isinstance(incoming, dict) else None
         if req_id:
             self.bus.reply(req_id, response)
 
-    # ---- lifecycle ----------------------------------------------------
+    # ---- 生命周期 ----------------------------------------------------
     async def start(self) -> None:
         self._running = True
         for hook in self.spec.lifecycle_hooks.get("on_start", []):
             try:
                 hook(self)
             except Exception:  # noqa: BLE001
-                self._log.exception("on_start hook error")
+                self._log.exception("on_start 钩子出错")
         for topic in self.spec.subscriptions:
             self._subscriptions.append(
                 self.bus.subscribe(topic, self._dispatch)
@@ -92,25 +92,25 @@ class Agent:
             try:
                 hook(self)
             except Exception:  # noqa: BLE001
-                self._log.exception("on_stop hook error")
+                self._log.exception("on_stop 钩子出错")
 
-    # ---- behaviour hooks (override) ----------------------------------
+    # ---- 行为钩子（可覆盖） ------------------------------------------
     async def run(self) -> None:
-        """Proactive behaviour. Default no-op; reactive agents use handle()."""
-        await asyncio.sleep(0)  # pragma: no cover - default inert
+        """主动行为。默认空操作；响应式智能体使用 handle()。"""
+        await asyncio.sleep(0)  # pragma: no cover - 默认惰性实现
 
     async def handle(self, topic: str, message: Any) -> None:
-        """React to a subscribed topic. Override in subclasses."""
+        """响应已订阅的主题。在子类中覆盖。"""
         return None
 
-    # ---- internals ----------------------------------------------------
+    # ---- 内部实现 ----------------------------------------------------
     async def _dispatch(self, topic: str, message: Any) -> None:
         try:
             result = self.handle(topic, message)
             if asyncio.iscoroutine(result):
                 await result
         except Exception:  # noqa: BLE001
-            self._log.exception("handle error topic=%r", topic)
+            self._log.exception("handle 出错 topic=%r", topic)
 
     async def _run_loop(self) -> None:
         try:
@@ -118,7 +118,7 @@ class Agent:
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
-            self._log.exception("run error")
+            self._log.exception("run 出错")
 
 
 __all__ = ["Agent", "AgentSpec"]

@@ -1,15 +1,15 @@
-"""ExampleWorkerAgent — a generic demonstration of the WorkerAgent contract.
+"""ExampleWorkerAgent —— WorkerAgent 契约的一个通用演示。
 
-Uses a TargetAdapter to *act* and *observe* on a GENERIC target (no concrete
-device, no burn-in specifics). It shows how to override ``do_work`` / ``recover``
-/ ``check`` and verifies the publish pipeline:
+使用一个 TargetAdapter，在*通用*目标上执行 *act* 和 *observe*（没有具体的
+设备，也没有烧入（burn-in）相关的细节）。它展示了如何覆盖 ``do_work`` /
+``recover`` / ``check``，并验证了发布流水线：
 
     loop/tick -> act() -> target/acted, target/recovered, target/checked,
                              agent/<role>/done
 
-To use this against a real system, supply a concrete ``TargetAdapter``
-implementation (e.g. a device / service / resource adapter) — no other change is
-needed. WorkerAgents are execution-only: they never decide pass/fail.
+要将其用于真实系统，只需提供一个具体的 ``TargetAdapter`` 实现（例如某个
+设备 / 服务 / 资源适配器）—— 无需其他改动。WorkerAgent 仅作执行：它们绝不
+裁决通过/失败。
 """
 
 import asyncio
@@ -22,7 +22,7 @@ from ..adapter import TargetAdapter, State
 
 
 class ExampleWorkerAgent(WorkerAgent):
-    """Generic worker: cycles act -> recover -> check on each ``loop/tick``."""
+    """通用工作者：在每个 ``loop/tick`` 上循环执行 act -> recover -> check。"""
 
     def __init__(
         self,
@@ -44,19 +44,18 @@ class ExampleWorkerAgent(WorkerAgent):
 
     # ---- act ----------------------------------------------------------
     def do_work(self, tick: dict):
-        """Invoke the adapter's ``act()``. Returns whatever the adapter reports."""
+        """调用适配器的 ``act()``。返回适配器上报的任何内容。"""
         op = tick.get("operation", self.operation)
         result = self.adapter.act(op)
-        self._log.info("acted op=%r ok=%s", op, result.ok)
+        self._log.info("已执行 op=%r ok=%s", op, result.ok)
         return result
 
-    # ---- recover (polled readiness) -----------------------------------
+    # ---- recover（轮询就绪） ---------------------------------------
     async def recover(self, tick: dict) -> bool:
-        """Poll ``adapter.observe()`` until the target reports readiness.
+        """轮询 ``adapter.observe()``，直到目标报告就绪。
 
-        Generic readiness rule: a target is considered recovered unless it
-        explicitly reports ``{"up": False}``. Override for domain-specific
-        stabilization (e.g. wait for a known-good state snapshot).
+        通用就绪规则：除非目标明确报告 ``{"up": False}``，否则视为已恢复。
+        针对领域特定的稳定化逻辑（例如等待某个已知良好状态的快照）进行覆盖。
         """
         last = None
         for _ in range(self.recover_polls):
@@ -67,21 +66,21 @@ class ExampleWorkerAgent(WorkerAgent):
                 await asyncio.sleep(self.recover_interval)
                 continue
             return True
-        # never observed a clear failure -> treat as recovered
+        # 从未观察到明确的失败 -> 视为已恢复
         return True
 
-    # ---- check (fact production) --------------------------------------
+    # ---- check（事实生成） ----------------------------------------
     def check(self, tick: dict) -> dict:
-        """Return fact checks consumed by the DecisionAuthority.
+        """返回由 DecisionAuthority 消费的事实检查。
 
-        Generic example facts: the act produced a result and the observed state
-        is healthy. Override to assert domain invariants.
+        通用示例事实：act 产生了结果且观测到的状态是健康的。覆盖它以断言
+        领域特定的不变量。
         """
         facts = dict(self._facts)
         try:
             state = self.adapter.observe()
             snap = state.snapshot if isinstance(state, State) else state
-        except Exception:  # noqa: BLE001 - observation failure is a failed fact
+        except Exception:  # noqa: BLE001 - 观测失败即视为一个失败事实
             snap = None
         facts.setdefault("acted", True)
         if isinstance(snap, dict):
@@ -92,7 +91,7 @@ class ExampleWorkerAgent(WorkerAgent):
 __all__ = ["ExampleWorkerAgent"]
 
 
-if __name__ == "__main__":  # run with: python -m stability_harness_loop_multiagent.multi_agent.workers.example
+if __name__ == "__main__":  # 运行方式：python -m stability_harness_loop_multiagent.multi_agent.workers.example
     import time
 
     from ...harness.bus import EventBus
@@ -123,10 +122,10 @@ if __name__ == "__main__":  # run with: python -m stability_harness_loop_multiag
             bus, AgentSpec(id="w1", role="example"), StubAdapter()
         )
         await worker.act({"round": 1, "operation": "demo"})
-        await asyncio.sleep(0.05)  # let fire-and-forget handlers flush
-        print(f"published {len(collected)} messages:")
+        await asyncio.sleep(0.05)  # 让发送即忘的处理器刷新
+        print(f"已发布 {len(collected)} 条消息：")
         for m in collected:
             print("  ", m)
-        worker._log.info("demo done at t=%.2f", time.time())
+        worker._log.info("演示完成于 t=%.2f", time.time())
 
     asyncio.run(demo())

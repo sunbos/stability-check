@@ -1,7 +1,6 @@
-"""ObserverAgent — reporting/notification role of the MAS.
+"""ObserverAgent —— MAS 中的上报/通知角色。
 
-Consumes events and reports/notifies. Never decides. Subscribe to event topics
-in the spec and implement ``on_event``.
+消费事件并上报/通知。绝不裁决。在 spec 中订阅事件主题并实现 ``on_event``。
 """
 
 from ...harness.agent import Agent, AgentSpec
@@ -16,7 +15,7 @@ class ObserverAgent(Agent):
         self.on_event(topic, message)
 
     def on_event(self, topic: str, message) -> None:
-        """Override: record or notify. Never alters loop state/decisions."""
+        """覆盖：记录或通知。绝不改动循环状态/决策。"""
         return None
 
 

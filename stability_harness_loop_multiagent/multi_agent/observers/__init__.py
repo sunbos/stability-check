@@ -1,4 +1,4 @@
-"""MAS observer roles (reporting/notification agents; observation only)."""
+"""MAS 观察者角色（上报/通知智能体；仅作观察）。"""
 
 from .base import ObserverAgent
 from .scribe import ScribeAgent

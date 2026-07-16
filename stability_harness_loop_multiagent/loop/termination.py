@@ -1,17 +1,16 @@
-"""Termination — composable StopConditions OR-combined by a TerminationPolicy.
+"""Termination —— 可组合的 StopCondition，由 TerminationPolicy 以 OR 方式组合。
 
-Each condition evaluates a ReadOnlyContext and returns (should_halt, reason).
-The policy OR-composes conditions in *precedence* order (list order by default,
-or an explicit ``precedence`` list of class names) and returns the first halting
-condition's reason.
+每个条件评估一个 ReadOnlyContext 并返回 (should_halt, reason)。策略按*优先级*
+顺序（默认即列表顺序，或显式的 ``precedence`` 类名列表）以 OR 方式组合各条件，
+并返回第一个触发停止的条件的原因。
 
-Included conditions:
-  - CountStop            — max rounds reached.
-  - DurationStop         — wall-clock budget exhausted.
-  - FailThresholdStop    — cumulative AND/OR consecutive failures breached.
-  - ExternalAbortStop    — harness/abort on the bus, a settable flag/callable,
-                            or ctx.aborted set by the loop (the watchdog's path).
-  - ExternalStop         — backward-compatible alias of ExternalAbortStop.
+内置条件：
+  - CountStop            —— 达到最大轮数。
+  - DurationStop         —— 墙钟预算耗尽。
+  - FailThresholdStop    —— 累计 与/或 连续 失败次数越过阈值。
+  - ExternalAbortStop    —— 总线上的 harness/abort、一个可设置的标志/可调用对象，
+                            或由循环设置的 ctx.aborted（看门狗的路径）。
+  - ExternalStop         —— ExternalAbortStop 的向后兼容别名。
 """
 
 from typing import List, Optional, Tuple
@@ -20,26 +19,26 @@ from .context import ReadOnlyContext
 
 
 class StopCondition:
-    """Protocol base. Subclass and implement ``evaluate``."""
+    """协议基类。子类化并实现 ``evaluate``。"""
 
     def evaluate(self, ctx: ReadOnlyContext) -> Tuple[bool, str]:
         raise NotImplementedError
 
 
 class CountStop(StopCondition):
-    """Halt after ``max_rounds`` iterations have completed."""
+    """在 ``max_rounds`` 次迭代完成后停止。"""
 
     def __init__(self, max_rounds: int) -> None:
         self.max_rounds = max_rounds
 
     def evaluate(self, ctx: ReadOnlyContext) -> Tuple[bool, str]:
         if self.max_rounds and ctx.round_count >= self.max_rounds:
-            return True, f"reached max_rounds={self.max_rounds}"
+            return True, f"已到达 max_rounds={self.max_rounds}"
         return False, ""
 
 
 class DurationStop(StopCondition):
-    """Halt after ``max_duration`` seconds since start."""
+    """在自启动起经过 ``max_duration`` 秒后停止。"""
 
     def __init__(self, max_duration: float, start_ts: float = None) -> None:
         import time
@@ -51,12 +50,12 @@ class DurationStop(StopCondition):
         import time
 
         if self.max_duration and (time.time() - self.start_ts) >= self.max_duration:
-            return True, f"exceeded max_duration={self.max_duration}s"
+            return True, f"超出 max_duration={self.max_duration}s"
         return False, ""
 
 
 class FailThresholdStop(StopCondition):
-    """Halt when cumulative or consecutive failed rounds breach thresholds."""
+    """当累计或连续失败轮次越过阈值时停止。"""
 
     def __init__(
         self,
@@ -73,7 +72,7 @@ class FailThresholdStop(StopCondition):
         if self.cumulative:
             fails = sum(1 for r in history if r.verdict in self.fail_verdicts)
             if fails >= self.cumulative:
-                return True, f"cumulative failures={fails} >= {self.cumulative}"
+                return True, f"累计失败={fails} >= {self.cumulative}"
         if self.consecutive:
             run = 0
             best = 0
@@ -81,21 +80,21 @@ class FailThresholdStop(StopCondition):
                 run = run + 1 if r.verdict in self.fail_verdicts else 0
                 best = max(best, run)
             if best >= self.consecutive:
-                return True, f"consecutive failures={best} >= {self.consecutive}"
+                return True, f"连续失败={best} >= {self.consecutive}"
         return False, ""
 
 
 class ExternalAbortStop(StopCondition):
-    """Halt on an external abort signal.
+    """在外部中止信号触发时停止。
 
-    Three independent triggers, any of which halts:
-      1. a ``harness/abort`` (or custom ``topic``) message on the bus, when a
-         bus is supplied at construction (this is how the Watchdog aborts);
-      2. a settable flag / callable ``flag`` (e.g. a SIGINT handler, CLI);
-      3. ``ctx.aborted`` — the loop marks the context aborted on its own halt.
+    三种相互独立的触发器，任意一个都会停止：
+      1. 总线上的 ``harness/abort``（或自定义 ``topic``）消息，当构造时提供了
+         bus 时（看门狗正是借此中止）；
+      2. 一个可设置的标志 / 可调用对象 ``flag``（例如 SIGINT 处理器、CLI）；
+      3. ``ctx.aborted`` —— 循环在自己停止时将上下文标记为已中止。
 
-    The condition is self-contained: pass a bus and it subscribes itself. Call
-    ``detach()`` (or let the process exit) to stop listening.
+    该条件是自包含的：传入一个 bus 它就会自行订阅。调用 ``detach()``
+    （或让进程退出）即可停止监听。
     """
 
     def __init__(
@@ -116,7 +115,7 @@ class ExternalAbortStop(StopCondition):
         self._raised = True
 
     def set(self) -> None:
-        """Manually raise the abort (mirrors the old ExternalStop API)."""
+        """手动触发中止（镜像旧的 ExternalStop API）。"""
         self._raised = True
 
     def unset(self) -> None:
@@ -124,15 +123,15 @@ class ExternalAbortStop(StopCondition):
 
     def evaluate(self, ctx: ReadOnlyContext) -> Tuple[bool, str]:
         if self._raised:
-            return True, "external abort signal"
+            return True, "外部中止信号"
         if self._flag is not None:
             try:
                 if self._flag():
-                    return True, "external abort flag"
-            except Exception:  # noqa: BLE001 - never let a bad flag block halt
-                return True, "external abort flag raised exception"
+                    return True, "外部中止标志"
+            except Exception:  # noqa: BLE001 - 绝不让一个坏标志阻断停止
+                return True, "外部中止标志抛出异常"
         if getattr(ctx, "aborted", False):
-            return True, "context aborted"
+            return True, "上下文已中止"
         return False, ""
 
     def detach(self) -> None:
@@ -144,26 +143,24 @@ class ExternalAbortStop(StopCondition):
             self._unsub = None
 
 
-# Backward-compatible alias (the original signature ``ExternalStop(flag=None)``
-# still works; ``flag`` is a supported keyword).
+# 向后兼容别名（原始签名 ``ExternalStop(flag=None)`` 仍可工作；``flag`` 是受支持的
+# 关键字参数）。
 ExternalStop = ExternalAbortStop
 
 
 class TerminationPolicy:
-    """OR-composes StopConditions in precedence order.
+    """按优先级顺序以 OR 方式组合 StopCondition。
 
-    ``conditions`` is evaluated in order; the *first* condition that halts wins.
-    By default the list order is the precedence. Pass ``precedence`` to reorder
-    by class name without rebuilding the list:
+    ``conditions`` 按顺序评估；*首个*触发停止的条件胜出。默认情况下列表顺序即
+    为优先级。传入 ``precedence`` 可按类名重排优先级而无需重建列表：
 
         TerminationPolicy(
             [CountStop(10), ExternalAbortStop(bus), DurationStop(3600)],
             precedence=["ExternalAbortStop", "DurationStop", "CountStop"],
         )
 
-    A condition whose class name is absent from ``precedence`` is evaluated last
-    (stable relative order preserved). Precedence lets an external abort or a
-    duration breach outrank a plain round count, for example.
+    一个类名未出现在 ``precedence`` 中的条件会被排在最后（保持原有的相对顺序）。
+    优先级使得例如外部中止或时长越界可以高于普通的轮数统计。
     """
 
     def __init__(

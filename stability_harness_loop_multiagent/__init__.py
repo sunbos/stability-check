@@ -1,11 +1,11 @@
-"""stability_harness_loop_multiagent — generic, domain-agnostic 3-engine autonomous-loop framework.
+"""stability_harness_loop_multiagent —— 通用的、与领域无关的“三引擎”自治循环框架。
 
-Three engines, one seam (the EventBus):
-  - harness/  runtime + governance (bus, agent lifecycle, watchdog, telemetry)
-  - loop/     deterministic control loop + decision authority + termination
-  - multi_agent/      multi-agent system (TargetAdapter, workers, advisors, observers)
+三个引擎，一个接缝（即 EventBus）：
+  - harness/  运行时 + 治理（事件总线、智能体生命周期、看门狗、遥测）
+  - loop/     确定性的控制循环 + 决策权 + 终止条件
+  - multi_agent/    多智能体系统（TargetAdapter、工作者、顾问、观察者）
 
-Engines never import one another; all cross-engine communication is via the bus.
+各引擎之间从不互相 import；所有跨引擎通信都通过事件总线完成。
 """
 
 from .harness.bus import EventBus

@@ -1,17 +1,16 @@
-"""Integration smoke test for the generic stability_harness_loop_multiagent framework.
+"""针对通用 stability_harness_loop_multiagent 框架的集成冒烟测试。
 
-Wires the three engines purely through the EventBus (no concrete scenario) and
-asserts the core invariants:
+纯粹通过 EventBus 将三个引擎连接起来（没有具体场景），并断言以下核心不变量：
 
-  1. The loop TERMINATES (reaches its round cap; no deadlock / hang).
-  2. VERDICTS are produced every round by the authoritative DecisionAuthority.
-  3. OBSERVERS receive events (the bus fan-out works end-to-end).
-  4. FACT DICTATORSHIP: an injected failing fact forces a 'fail' verdict even
-     though the advisor confidently votes a low risk.
+  1. 循环会终止（到达其轮次上限；无死锁 / 挂起）。
+  2. 每轮都由权威的 DecisionAuthority 产生裁决。
+  3. 观察者会收到事件（总线扇出端到端可用）。
+  4. 事实独裁：一个被注入的失败事实会强制产生 'fail' 裁决，尽管顾问以高
+     置信度投出了低风险。
 
-Standard library only. Run:
-    python stability_harness_loop_multiagent/examples/smoke.py   # standalone asserts
-    pytest tests/test_stability_harness_loop_multiagent_smoke.py # this file
+仅使用标准库。运行方式：
+    python stability_harness_loop_multiagent/examples/smoke.py   # 独立断言
+    pytest tests/test_stability_harness_loop_multiagent_smoke.py # 本文件
 """
 
 import asyncio
@@ -34,9 +33,9 @@ from stability_harness_loop_multiagent.examples.smoke import (
 @pytest.mark.asyncio
 async def test_loop_terminates_and_produces_verdicts():
     result = await run_smoke(fail=False, max_rounds=5)
-    # Invariant 1 + 2 + 3: termination, verdicts produced, observers saw events.
+    # 不变量 1 + 2 + 3：终止、产生了裁决、观察者看到了事件。
     assert_healthy(result)
-    # No deadlock: the run returned (asyncio.wait_for would have timed out).
+    # 无死锁：本次运行已返回（asyncio.wait_for 本会超时）。
     assert result["ctx"].round_count == 5
     assert result["loop"].verdict is not None
 
@@ -44,31 +43,31 @@ async def test_loop_terminates_and_produces_verdicts():
 @pytest.mark.asyncio
 async def test_fact_dictatorship_failing_fact_forces_fail():
     result = await run_smoke(fail=True, max_rounds=5)
-    # Invariant 4: fact dictatorship overrides the confident low-risk advisor vote.
+    # 不变量 4：事实独裁覆盖了高置信度的低风险顾问投票。
     assert_failing_fact(result)
 
 
 def test_decision_authority_fact_dictatorship_unit():
-    """Pure unit check of the safety floor: any falsy fact => fail, period."""
+    """对安全底线的纯单元测试：任何 falsy 事实 => fail，句号。"""
     dec = DecisionAuthority()
-    # Low risk + a False fact => fail (risk cannot upgrade a broken fact).
+    # 低风险 + 一个 False 事实 => fail（风险无法升级一个已破损的事实）。
     v = dec.decide({"acted": True, "state_ok": False}, risk_score=30.0)
     assert v.decision == "fail"
-    assert v.reason.startswith("fact failed")
-    # All facts satisfied + low risk => pass.
+    assert v.reason.startswith("事实未满足")
+    # 所有事实满足 + 低风险 => pass。
     assert dec.decide({"acted": True, "state_ok": True}, risk_score=30.0).decision == "pass"
-    # Empty facts dict is "nothing falsy" => pass (the loop injects a failing
-    # 'checks_received' fact when no worker reports, see ControlLoop._merge_facts).
+    # 空事实字典是“没有 falsy 事实” => pass（当没有工作者上报时，循环会注入
+    # 一个失败的 'checks_received' 事实，见 ControlLoop._merge_facts）。
     assert dec.decide({}, risk_score=10.0).decision == "pass"
 
 
 @pytest.mark.asyncio
 async def test_fake_adapter_is_structural_target_adapter():
-    """The fake adapter behaves like a TargetAdapter without subclassing it."""
+    """假适配器表现得像一个 TargetAdapter，而无需子类化它。"""
     from stability_harness_loop_multiagent.multi_agent.adapter import TargetAdapter
 
     a = FakeTargetAdapter()
-    assert isinstance(a, TargetAdapter)  # runtime_checkable protocol
+    assert isinstance(a, TargetAdapter)  # runtime_checkable 协议
     r = a.act("ping")
     assert r.ok and r.data["counter"] == 1
     assert a.observe().snapshot["up"] is True

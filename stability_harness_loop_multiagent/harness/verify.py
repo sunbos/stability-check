@@ -1,20 +1,20 @@
-"""Verification — guardrails, input/output validation hooks, eval hooks.
+"""验证 —— 护栏、输入/输出校验钩子、评估钩子。
 
-Generic, scenario-agnostic. Workers/harness invoke the Verifier around boundaries:
-  - input guardrails  validate/transform an inbound request before it drives an agent.
-  - output guardrails validate an agent's outgoing message/result before publish.
-  - eval hooks        score a round/result against expectations (assertions).
+通用、与领域无关。工作者/harness 在边界处调用 Verifier：
+  - 输入护栏  在请求驱动智能体之前，对其校验/转换。
+  - 输出护栏  在消息/结果发布之前，对其校验。
+  - 评估钩子  根据期望（断言）为一个轮次/结果打分。
 
-A guardrail hook is a callable ``fn(item) -> None | (ok, reason)``. Returning a falsy
-``ok`` (or raising ``VerifyError``) is a failure. By default the Verifier fails *closed*:
-a blocking failure short-circuits the chain and raises ``VerifyError`` so the caller
-cannot proceed. ``run_eval`` never raises; it aggregates ``EvalResult`` into an
-``EvalReport`` (with a combined score and ``passed`` flag).
+护栏钩子是一个可调用对象 ``fn(item) -> None | (ok, reason)``。返回 falsy 的
+``ok``（或抛出 ``VerifyError``）即视为失败。默认情况下 Verifier 以*失败关闭*
+（fail-closed）方式工作：一个阻塞型失败会短路整条链并抛出 ``VerifyError``，
+从而让调用方无法继续。``run_eval`` 永不抛出；它将 ``EvalResult`` 聚合成一个
+``EvalReport``（带有综合分数与 ``passed`` 标志）。
 
-``VerificationAgent`` mounts the Verifier on the bus: it subscribes to
-``harness/verify/request`` and replies allow/deny via req_id.
+``VerificationAgent`` 将 Verifier 挂载到总线上：它订阅 ``harness/verify/request``
+并通过 req_id 回复允许/拒绝。
 
-Engine isolation: imports only from this harness package (bus, agent).
+引擎隔离：仅从本 harness 包（bus、agent）导入。
 """
 
 import logging
@@ -26,7 +26,7 @@ from .bus import EventBus
 
 
 class VerifyError(Exception):
-    """Raised when a guardrail blocks (fail-closed)."""
+    """当护栏拦截（fail-closed）时抛出。"""
 
     def __init__(self, reason: str, stage: str = "", hook: str = "") -> None:
         super().__init__(reason)
@@ -84,7 +84,7 @@ class Verifier:
         self._eval: List[Tuple[str, Guardrail]] = []
         self._log = logging.getLogger("stability_harness_loop_multiagent.verify")
 
-    # ---- registration ----------------------------------------------
+    # ---- 注册 -------------------------------------------------------
     def add_input_guardrail(self, name: str, fn: Guardrail) -> "Verifier":
         self._input.append((name, fn))
         return self
@@ -97,7 +97,7 @@ class Verifier:
         self._eval.append((name, fn))
         return self
 
-    # ---- validation -------------------------------------------------
+    # ---- 校验 -------------------------------------------------------
     def _run_chain(self, chain: List[Tuple[str, Guardrail]], stage: str, item: Any):
         for name, fn in chain:
             try:
@@ -106,7 +106,7 @@ class Verifier:
                 e.stage = stage
                 e.hook = name
                 return False, e.reason, name
-            except Exception as e:  # noqa: BLE001 - guardrail failures are policy failures
+            except Exception as e:  # noqa: BLE001 - 护栏失败即策略失败
                 return False, f"{name}: {e}", name
             if res is not None:
                 if isinstance(res, tuple):
@@ -132,7 +132,7 @@ class Verifier:
             raise VerifyError(reason, stage=stage, hook=hook)
         return VerifyResult(ok=ok, reason=reason, hook=hook, stage=stage)
 
-    # ---- evaluation -------------------------------------------------
+    # ---- 评估 -------------------------------------------------------
     def run_eval(self, record: Any) -> EvalReport:
         results: List[EvalResult] = []
         for name, fn in self._eval:
@@ -159,7 +159,7 @@ class Verifier:
 
 
 class VerificationAgent(Agent):
-    """Bus-native verifier. Replies allow/deny to ``harness/verify/request``."""
+    """原生挂载于总线的验证器。对 ``harness/verify/request`` 回复允许/拒绝。"""
 
     def __init__(
         self,

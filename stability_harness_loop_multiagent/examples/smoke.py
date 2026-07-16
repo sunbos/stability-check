@@ -1,28 +1,28 @@
-"""Smoke test / self-contained demo for the generic stability_harness_loop_multiagent framework.
+"""针对通用 stability_harness_loop_multiagent 框架的冒烟测试 / 自包含演示。
 
-This proves the generic template RUNS end-to-end with NO concrete scenario baked
-in. It wires the three engines purely through the EventBus:
+这证明了通用模板能够端到端运行，而无需内置任何具体场景。它纯粹通过
+EventBus 将三个引擎连接起来：
 
-    harness : EventBus, Telemetry, Watchdog (liveness / deadlock detector)
+    harness : EventBus, Telemetry, Watchdog（存活 / 死锁探测器）
     loop    : ControlLoop + RunConfig + DecisionAuthority + TerminationPolicy
     multi_agent     : FakeTargetAdapter + WorkerAgent + AdvisorAgent + ObserverAgent
 
-The only "target" is a synthetic in-memory counter (FakeTargetAdapter): the
-worker increments it on every act() and reports synthetic state/events. No
-real device, service, or domain is involved, so the demo stays generic.
+唯一的“目标”是一个合成的内存计数器（FakeTargetAdapter）：工作者在每次
+act() 时使其自增，并报告合成的状态/事件。没有涉及真实的设备、服务或领域，
+因此该演示保持通用。
 
-Run directly:  python stability_harness_loop_multiagent/examples/smoke.py
-Used by tests: tests/test_stability_harness_loop_multiagent_smoke.py imports run_smoke / the roles here.
+直接运行：  python stability_harness_loop_multiagent/examples/smoke.py
+被测试使用：tests/test_stability_harness_loop_multiagent_smoke.py 导入 run_smoke / 其中的角色。
 
-Standard library only; asserts via exceptions (raises == failure).
+仅使用标准库；通过异常进行断言（raise == 失败）。
 """
 
 import asyncio
 import os
 import sys
 
-# Make the stability_harness_loop_multiagent package importable when run as a bare script from the repo
-# root (python stability_harness_loop_multiagent/examples/smoke.py).
+# 当作为裸脚本从仓库根目录运行时（python stability_harness_loop_multiagent/examples/smoke.py），
+# 让 stability_harness_loop_multiagent 包可被导入。
 sys.path.insert(
     0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
@@ -46,18 +46,18 @@ from stability_harness_loop_multiagent.multi_agent.adapter import Event, Result,
 
 
 # --------------------------------------------------------------------------
-# Fake target — a synthetic, scenario-agnostic "thing" the MAS acts upon.
+# 假目标 —— 一个合成的、与场景无关的“事物”，由 MAS 对其执行操作。
 # --------------------------------------------------------------------------
 class FakeTargetAdapter:
-    """A counter that increments on every act(); reports synthetic state/events.
+    """一个在每次 act() 时自增的计数器；报告合成的状态/事件。
 
-    Implements the TargetAdapter *protocol* structurally (no subclass needed):
-    act() -> Result, observe() -> State, events(since) -> List[Event].
+    以结构化方式实现 TargetAdapter *协议*（无需子类化）：
+    act() -> Result, observe() -> State, events(since) -> List[Event]。
     """
 
     def __init__(self, fail: bool = False) -> None:
         self.counter = 0
-        self.fail = fail  # when True, observe() reports an unhealthy state
+        self.fail = fail  # 为 True 时，observe() 报告不健康状态
 
     def act(self, operation) -> Result:
         self.counter += 1
@@ -76,12 +76,12 @@ class FakeTargetAdapter:
 
 
 # --------------------------------------------------------------------------
-# MAS roles — generic; no concrete domain knowledge.
+# MAS 角色 —— 通用的；不包含任何具体的领域知识。
 # --------------------------------------------------------------------------
 class FakeWorker(WorkerAgent):
-    """Worker that drives the FakeTargetAdapter.
+    """驱动 FakeTargetAdapter 的工作者。
 
-    Publishes the standard pipeline on every loop/tick:
+    在每个 loop/tick 上发布标准流水线：
         target/acted, target/recovered, target/checked, agent/<role>/done
     """
 
@@ -92,7 +92,7 @@ class FakeWorker(WorkerAgent):
 
 
 class FixedAdvisor(AdvisorAgent):
-    """Minimal advisor: votes a fixed (risk, confidence) every round."""
+    """最小化的顾问：每轮投出一个固定的（风险、置信度）。"""
 
     def __init__(self, bus, spec, *, risk: float = 30.0, confidence: float = 0.9,
                  weight: float = 1.0) -> None:
@@ -105,7 +105,7 @@ class FixedAdvisor(AdvisorAgent):
 
 
 class PrintingObserver(ObserverAgent):
-    """Observer that records every event it sees and prints loop/done summaries."""
+    """记录所见到的每个事件，并打印 loop/done 摘要的观察者。"""
 
     def __init__(self, bus, spec) -> None:
         super().__init__(bus, spec)
@@ -120,7 +120,7 @@ class PrintingObserver(ObserverAgent):
 
 
 # --------------------------------------------------------------------------
-# End-to-end driver. Returns a dict of artifacts for inspection / assertions.
+# 端到端驱动器。返回一个供检查 / 断言使用的产物字典。
 # --------------------------------------------------------------------------
 async def run_smoke(
     fail: bool = False,
@@ -135,8 +135,8 @@ async def run_smoke(
     ctx = SharedContext(baseline={"kind": "fake"}, strategy_text="smoke-demo")
     decision = DecisionAuthority()
 
-    # RunConfig -> TerminationPolicy. max_duration=0 disables the duration stop;
-    # a huge fail_threshold keeps the loop alive until max_rounds is hit.
+    # RunConfig -> TerminationPolicy。max_duration=0 会禁用“时长停止”；
+    # 一个极大的 fail_threshold 会让循环一直存活，直到命中 max_rounds。
     cfg = RunConfig(max_rounds=max_rounds, max_duration=0.0, fail_threshold=10_000)
     term = cfg.build_termination()
 
@@ -145,12 +145,12 @@ async def run_smoke(
         ctx,
         decision,
         term,
-        # tiny timeouts so the demo finishes in well under a second
+        # 极短的超时，使演示在远小于一秒内完成
         vote_timeout=0.1,
         recover_timeout=0.05,
         check_timeout=0.05,
         recheck_limit=0,
-        # no inter-round idle so the whole run is fast & deterministic
+        # 轮间无空闲，使整次运行快速且确定性
         scheduler=Scheduler(base=0.0, min_interval=0.0),
         telemetry=tel,
     )
@@ -170,17 +170,17 @@ async def run_smoke(
             subscriptions=["loop/done", "target/#", "agent/#"],
         ),
     )
-    # Generous stall budget: the watchdog must NOT abort this healthy run.
+    # 充裕的停滞预算：看门狗绝不应中止这次健康运行。
     dog = Watchdog(bus, stall_timeout=300.0, check_interval=0.05)
 
-    # Start all agents; the loop is started as an agent and awaited to completion.
+    # 启动所有智能体；循环作为一个智能体启动，并 await 其完成。
     for a in (worker, advisor, observer, dog):
         await a.start()
     await loop.start()
 
     try:
-        # Deterministic termination: the loop halts on CountStop(max_rounds).
-        # wait_for doubles as a deadlock detector — a stuck loop times out.
+        # 确定性终止：循环在 CountStop(max_rounds) 上停止。
+        # wait_for 同时充当死锁探测器 —— 一个卡住的循环会超时。
         await asyncio.wait_for(loop._task, run_timeout)
     finally:
         for a in (worker, advisor, observer, dog):
@@ -202,27 +202,27 @@ def assert_healthy(result: dict) -> None:
     observer = result["observer"]
     adapter = result["adapter"]
 
-    # 1) loop reaches termination
-    assert ctx.round_count >= 1, "loop produced no rounds"
-    assert ctx.aborted, "loop did not reach a termination state"
-    # exactly max_rounds rounds ran
+    # 1) 循环到达终止状态
+    assert ctx.round_count >= 1, "循环没有产生任何轮次"
+    assert ctx.aborted, "循环没有到达一个终止状态"
+    # 恰好运行了 max_rounds 轮
     assert ctx.round_count == result["config"].max_rounds, (
-        f"expected {result['config'].max_rounds} rounds, got {ctx.round_count}"
+        f"期望 {result['config'].max_rounds} 轮，实际 {ctx.round_count}"
     )
-    # 2) verdicts produced
-    assert loop.verdict is not None, "no authoritative verdict was set"
+    # 2) 产生了裁决
+    assert loop.verdict is not None, "没有设置权威裁决"
     history = ctx.snapshot().round_history
     assert len(history) == ctx.round_count
     assert all(r.verdict == "pass" for r in history), (
-        "healthy run should produce only 'pass' verdicts: "
+        "健康运行应当只产生 'pass' 裁决："
         f"{[r.verdict for r in history]}"
     )
-    # 3) observers received events (loop/done at minimum)
-    assert observer.seen, "observer received no events"
+    # 3) 观察者收到了事件（至少收到了 loop/done）
+    assert observer.seen, "观察者没有收到任何事件"
     assert any(t == "loop/done" for t, _ in observer.seen)
-    # 4) the worker actually acted each round through the fake adapter
+    # 4) 工作者确实通过假适配器在每轮都执行了操作
     assert adapter.counter == ctx.round_count, (
-        f"worker acted {adapter.counter} times but {ctx.round_count} rounds ran"
+        f"工作者执行了 {adapter.counter} 次，但运行了 {ctx.round_count} 轮"
     )
 
 
@@ -231,37 +231,37 @@ def assert_failing_fact(result: dict) -> None:
     loop = result["loop"]
     history = ctx.snapshot().round_history
 
-    # fact dictatorship: an injected failing fact must yield a 'fail' verdict,
-    # even though the advisor confidently voted low risk (30).
+    # 事实独裁：一个被注入的失败事实必须产生一个 'fail' 裁决，
+    # 即使顾问以高置信度投出了低风险（30）。
     assert any(r.verdict == "fail" for r in history), (
-        "failing fact should force at least one 'fail' verdict: "
+        "失败事实应当至少强制出一个 'fail' 裁决："
         f"{[r.verdict for r in history]}"
     )
     assert loop.verdict is not None
-    # the final verdict reflects the failure
+    # 最终裁决反映了这次失败
     assert ctx.snapshot().round_history[-1].verdict == "fail"
-    # sanity: a fact was actually false
+    # 合理性检查：确实有一个事实为 False
     assert any(
         not ok for r in history for ok in r.facts.values()
-    ), "expected at least one falsy fact in the recorded rounds"
+    ), "期望在已记录的轮次中至少有一个 falsy 事实"
 
 
 async def _main() -> None:
-    print("=== stability_harness_loop_multiagent generic smoke (healthy scenario) ===")
+    print("=== stability_harness_loop_multiagent 通用冒烟（健康场景） ===")
     healthy = await run_smoke(fail=False, max_rounds=5)
     assert_healthy(healthy)
     print(
-        f"OK healthy: rounds={healthy['ctx'].round_count} "
+        f"OK 健康: rounds={healthy['ctx'].round_count} "
         f"verdicts={[r.verdict for r in healthy['ctx'].snapshot().round_history]} "
         f"observer_events={len(healthy['observer'].seen)} "
         f"acts={healthy['adapter'].counter}"
     )
 
-    print("\n=== stability_harness_loop_multiagent generic smoke (fact-dictatorship scenario) ===")
+    print("\n=== stability_harness_loop_multiagent 通用冒烟（事实独裁场景） ===")
     failing = await run_smoke(fail=True, max_rounds=5)
     assert_failing_fact(failing)
     print(
-        f"OK failing: rounds={failing['ctx'].round_count} "
+        f"OK 失败: rounds={failing['ctx'].round_count} "
         f"verdicts={[r.verdict for r in failing['ctx'].snapshot().round_history]}"
     )
 

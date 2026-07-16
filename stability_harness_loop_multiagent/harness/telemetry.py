@@ -1,8 +1,8 @@
-"""Telemetry — structured logging + pluggable sinks.
+"""Telemetry —— 结构化日志 + 可插拔的输出槽（sink）。
 
-Emits trace/metric records both to local sinks (e.g. PrintSink) and onto the bus
-under ``harness/metric/<name>`` (metrics) and ``harness/trace`` (traces), so any
-observer agent can consume them without coupling to this module.
+既向本地输出槽（例如 PrintSink）发出 trace/metric 记录，也向总线上的
+``harness/metric/<name>``（指标）与 ``harness/trace``（追踪）发出，这样任何
+观察者智能体都能消费它们，而无需与本模块耦合。
 """
 
 import json
@@ -14,24 +14,24 @@ from .bus import EventBus
 
 
 class Sink:
-    """Base class for telemetry sinks. Override ``emit``."""
+    """遥测输出槽的基类。覆盖 ``emit``。"""
 
     def emit(self, record: Dict[str, Any]) -> None:
         raise NotImplementedError
 
 
 class PrintSink(Sink):
-    """Default sink: pretty JSON to stdout."""
+    """默认输出槽：将记录以漂亮的 JSON 形式打印到 stdout。"""
 
     def emit(self, record: Dict[str, Any]) -> None:
         print(json.dumps(record, ensure_ascii=False))
 
 
 class MemorySink(Sink):
-    """In-memory sink — keeps every record in a list. Handy for tests/assertions.
+    """内存输出槽 —— 将每条记录保存在一个列表中。便于测试/断言使用。
 
-    Records are plain dicts as produced by ``Telemetry._emit``. Use ``get``/``count``
-    to filter, or ``clear`` between cases.
+    记录是 ``Telemetry._emit`` 产生的普通字典。可用 ``get``/``count``
+    进行过滤，或在用例之间用 ``clear`` 清空。
     """
 
     def __init__(self, maxlen: Optional[int] = None) -> None:
@@ -59,7 +59,7 @@ class MemorySink(Sink):
 
 
 class NullSink(Sink):
-    """Sink that discards everything. Useful to silence telemetry in benchmarks."""
+    """丢弃一切的输出槽。便于在基准测试中屏蔽遥测输出。"""
 
     def emit(self, record: Dict[str, Any]) -> None:
         return None
@@ -87,7 +87,7 @@ class Telemetry:
             try:
                 sink.emit(record)
             except Exception:  # noqa: BLE001
-                self._log.exception("sink error")
+                self._log.exception("sink 出错")
         if self.bus is not None:
             topic = f"harness/metric/{name}" if kind == "metric" else "harness/trace"
             self.bus.publish(topic, record)
