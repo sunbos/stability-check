@@ -131,9 +131,17 @@ async def run_hikvision_stability(
     tel = Telemetry(bus=bus, sinks=[mem])
     ctx = SharedContext(baseline={"kind": "hikvision"}, strategy_text=instruction)
     decision = DecisionAuthority()
+    # ControlLoop waits max(recover_timeout, check_timeout) for target/checked
+    # (driver.py §round). When run_reboot=True, reboot+probe+warmup can take
+    # max_recover_timeout + warmup_time; add buffer for probe + open + query.
+    # When run_reboot=False, do_work is just a quick remote_open_door (2s ample).
+    if run_reboot:
+        round_act_timeout = max_recover_timeout + warmup_time + 30.0
+    else:
+        round_act_timeout = 2.0
     cfg = RunConfig(max_rounds=max_rounds, max_duration=0.0, fail_threshold=10_000,
-                    vote_timeout=0.1, recover_timeout=2.0, check_timeout=2.0,
-                    recheck_limit=0)
+                    vote_timeout=0.1, recover_timeout=round_act_timeout,
+                    check_timeout=round_act_timeout, recheck_limit=0)
     term = cfg.build_termination()
     loop = ControlLoop(
         bus, ctx, decision, term,
@@ -141,7 +149,11 @@ async def run_hikvision_stability(
         recover_timeout=cfg.recover_timeout,
         check_timeout=cfg.check_timeout,
         recheck_limit=cfg.recheck_limit,
-        scheduler=Scheduler(base=0.0, min_interval=0.0),
+        # k=0.0 disables adaptive cooldown: each round's round_act_timeout
+        # already waits for the full reboot+probe+warmup+open cycle. Without
+        # this, recover_time (~180s) * k (1.5) = 270s extra sleep per round,
+        # making 5-round reboot tests take 40+ minutes.
+        scheduler=Scheduler(base=0.0, k=0.0, min_interval=0.0),
         telemetry=tel,
     )
 

@@ -30,9 +30,16 @@ def _now_iso() -> str:
     return t.strftime("%Y-%m-%dT%H:%M:%S+08:00")
 
 
-def _iso_seconds_ago(seconds: int) -> str:
-    """ISO timestamp N seconds ago (second precision, no microseconds)."""
-    t = datetime.now(timezone(timedelta(hours=8))) - timedelta(seconds=seconds)
+def _iso_seconds_before(ref_iso: str, seconds: int) -> str:
+    """ISO timestamp N seconds before a reference ISO time (second precision).
+
+    Used to compute device-time-based query windows (spec §2.1 A.2): device
+    event log stores events with device time, so the window must be in device
+    time. After a reboot, device time may drift (NTP not synced, factory
+    default), making host-time windows miss events recorded at drifted time.
+    """
+    ref = datetime.fromisoformat(ref_iso)
+    t = ref - timedelta(seconds=seconds)
     return t.strftime("%Y-%m-%dT%H:%M:%S+08:00")
 
 
@@ -126,6 +133,8 @@ class HikvisionWorker(WorkerAgent):
         # Phase 2: remote_open_door (or whatever op was requested)
         result = self.adapter.act(op)
         stages["act_ok"] = result.ok
+        if not result.ok:
+            stages["act_error"] = result.error
         self._last_work_stages = stages
         return result
 
@@ -149,12 +158,23 @@ class HikvisionWorker(WorkerAgent):
         return False
 
     async def recover(self, tick: dict) -> bool:
-        # Use a 30-second lookback window to reliably catch events generated
-        # during do_work. do_work + digest auth handshake can take >500ms, so
-        # a zero-width window [now, now] misses events from the same second.
-        # 30s is safe: round interval is 2s, and serialNo can correlate cycles.
-        start = _iso_seconds_ago(30)
-        end = _now_iso()
+        # Query window: when run_reboot=True, device reboots (~60s) + warmup
+        # (60s) means remote_open_door events may be 120s+ old by the time we
+        # query. Use a wide 300s lookback to cover the full reboot cycle.
+        # When run_reboot=False, 30s is ample (do_work is just a quick open).
+        lookback = 300 if self._run_reboot else 30
+        # Compute query window in DEVICE time (spec §2.1 A.2): device event
+        # log stores events with device time. After a reboot, device time may
+        # drift (NTP not synced, factory default), so a host-time window would
+        # miss events recorded at drifted device time. Fetch device_now and
+        # compute [device_now - lookback, device_now]. Fallback to host time
+        # only if get_time() fails (device unreachable mid-round).
+        try:
+            device_time = await asyncio.to_thread(self._client.get_time)
+            end = device_time["Time"]["localTime"]
+        except Exception:  # noqa: BLE001
+            end = _now_iso()
+        start = _iso_seconds_before(end, lookback)
         # Parallel query across majors via asyncio.to_thread (adapter/client are sync).
         # Client is internally serialized via threading.Lock (digest auth not thread-safe),
         # so the 3 calls run sequentially under the lock but don't block the event loop.
@@ -176,7 +196,10 @@ class HikvisionWorker(WorkerAgent):
             return True
         self._last_events = {"trigger": trigger, "opened": opened, "closed": closed}
 
-        # Self-heal: time skew if trigger missing and skew exceeds threshold
+        # Self-heal: time skew if trigger missing and skew exceeds threshold.
+        # NOTE: with device-time query window above, trigger is rarely missing
+        # due to time drift alone. This branch handles genuine missing events
+        # (e.g., device firmware bug, event log cleared on reboot).
         if not trigger and self._diagnostic is not None:
             skew = self._measure_time_skew()
             env = {"time_skew_seconds": skew,
@@ -186,7 +209,9 @@ class HikvisionWorker(WorkerAgent):
             if decision == HEAL_TIME_SYNC and skew > self._time_skew_threshold:
                 try:
                     self._client.set_time(_now_iso())
-                    # Re-query trigger after heal
+                    # Re-query trigger after heal using the SAME device-time
+                    # window (event was recorded at pre-sync device time D1,
+                    # which is within [device_now - lookback, device_now]).
                     self._last_events["trigger"] = await asyncio.to_thread(
                         self._client.query_events,
                         *HikEventCode.REMOTE_OPEN, start, end)
