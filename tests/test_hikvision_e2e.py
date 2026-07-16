@@ -16,7 +16,8 @@ from tests.fakes.fake_hikvision import FakeHikvisionClient
 async def test_e2e_loop_terminates_within_max_rounds():
     """Invariant 1: ControlLoop terminates within max_rounds, no deadlock."""
     result = await run_hikvision_stability(
-        client=FakeHikvisionClient(), max_rounds=4, run_timeout=15.0)
+        client=FakeHikvisionClient(), max_rounds=4, run_timeout=15.0,
+        run_reboot=False)
     assert result["ctx"].round_count == 4
     assert result["ctx"].aborted
 
@@ -25,7 +26,8 @@ async def test_e2e_loop_terminates_within_max_rounds():
 async def test_e2e_verdict_produced_each_round():
     """Invariant 2: each round produces a Verdict via DecisionAuthority."""
     result = await run_hikvision_stability(
-        client=FakeHikvisionClient(), max_rounds=3, run_timeout=15.0)
+        client=FakeHikvisionClient(), max_rounds=3, run_timeout=15.0,
+        run_reboot=False)
     history = result["ctx"].snapshot().round_history
     assert len(history) == 3
     assert all(r.verdict in ("pass", "fail", "warn") for r in history)
@@ -35,7 +37,8 @@ async def test_e2e_verdict_produced_each_round():
 async def test_e2e_event_fanout_to_scribe():
     """Invariant 3: Scribe observer receives loop/done events (bus end-to-end)."""
     result = await run_hikvision_stability(
-        client=FakeHikvisionClient(), max_rounds=2, run_timeout=15.0)
+        client=FakeHikvisionClient(), max_rounds=2, run_timeout=15.0,
+        run_reboot=False)
     sink = result["telemetry"]._sinks[0]
     # MemorySink records each telemetry emit; verify at least one loop.round metric
     assert hasattr(sink, "records")
@@ -62,7 +65,7 @@ async def test_e2e_fact_dictatorship_failure_forces_fail():
     """
     client = NoLockOpenFakeClient()
     result = await run_hikvision_stability(
-        client=client, max_rounds=3, run_timeout=15.0)
+        client=client, max_rounds=3, run_timeout=15.0, run_reboot=False)
     history = result["ctx"].snapshot().round_history
     assert len(history) == 3
     # All rounds should be 'fail' because lock_opened is always False

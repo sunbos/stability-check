@@ -74,11 +74,18 @@ async def _run_with_progress(
     run_timeout: float,
     instruction: str,
     use_llm: bool,
+    *,
+    run_reboot: bool = True,
+    probe_interval: float = 5.0,
+    probe_confirm_count: int = 2,
+    warmup_time: float = 60.0,
+    max_recover_timeout: float = 180.0,
 ) -> dict:
     """Custom runner that prints per-round progress in real time.
 
     Mirrors run_hikvision_stability but subscribes a printer to loop/done
-    BEFORE loop.start() so the user sees each round live.
+    BEFORE loop.start() so the user sees each round live. Reboot/probe/warmup
+    config (spec §4.1, §4.2, §6) forwarded to HikvisionWorker.
     """
     if use_llm:
         llm_parse = _make_llm_parse() or _default_parse
@@ -129,6 +136,11 @@ async def _run_with_progress(
                   subscriptions=["hikvision/plan"]),
         adapter, client, time_skew_threshold=3.0,
         diagnostic=diagnostic,
+        run_reboot=run_reboot,
+        probe_interval=probe_interval,
+        probe_confirm_count=probe_confirm_count,
+        warmup_time=warmup_time,
+        max_recover_timeout=max_recover_timeout,
     )
     _patch_worker_plan_handler(worker)
 
@@ -141,7 +153,9 @@ async def _run_with_progress(
         bus, AgentSpec(id="o1", role="scribe",
                        subscriptions=["loop/done", "agent/incident", "target/#"]),
     )
-    dog = Watchdog(bus, stall_timeout=300.0, check_interval=0.05)
+    # Watchdog stall_timeout must exceed max_recover_timeout + warmup_time.
+    stall_timeout = max(300.0, max_recover_timeout + warmup_time + 60.0)
+    dog = Watchdog(bus, stall_timeout=stall_timeout, check_interval=0.05)
 
     for a in (worker, advisor, scribe, dog):
         await a.start()
@@ -169,6 +183,17 @@ async def _main() -> int:
                         help="Override BURNIN_USER")
     parser.add_argument("--password", default=None,
                         help="Override BURNIN_PASSWORD")
+    # Reboot + probe + warmup config (spec §4.1, §4.2, §6 worker.*)
+    parser.add_argument("--no-reboot", action="store_true",
+                        help="Skip reboot phase (only remote_open_door each round)")
+    parser.add_argument("--warmup", type=float, default=60.0,
+                        help="Warmup seconds after device online (spec §6, default 60)")
+    parser.add_argument("--probe-interval", type=float, default=5.0,
+                        help="Probe poll interval seconds (spec §4.1, default 5)")
+    parser.add_argument("--probe-confirm", type=int, default=2,
+                        help="Consecutive successes to confirm online (spec §4.1, default 2)")
+    parser.add_argument("--max-recover", type=float, default=180.0,
+                        help="Max seconds to wait for device online after reboot (default 180)")
     args = parser.parse_args()
 
     # Device config: env (BURNIN_*) -> CLI args -> master defaults
@@ -176,6 +201,7 @@ async def _main() -> int:
     user = args.user or os.environ.get("BURNIN_USER") or "admin"
     pwd = args.password or os.environ.get("BURNIN_PASSWORD") or "121212.."
     instruction = os.environ.get("BURNIN_STRATEGY", "")
+    run_reboot = not args.no_reboot
 
     _print_header("Hikvision real-env smoke")
     print(f"Device:    {host}:80 (user={user})")
@@ -183,6 +209,10 @@ async def _main() -> int:
     print(f"Timeout:   {args.timeout}s")
     print(f"LLM:       {'DISABLED (--no-llm)' if args.no_llm else 'auto-detect (LLM_API_KEY/.env)'}")
     print(f"Strategy:  {instruction!r}")
+    print(f"Reboot:    {'ENABLED (reboot -> probe -> warmup -> open)' if run_reboot else 'DISABLED (--no-reboot, only open)'}")
+    if run_reboot:
+        print(f"  probe_interval={args.probe_interval}s, probe_confirm={args.probe_confirm}, "
+              f"warmup={args.warmup}s, max_recover={args.max_recover}s")
 
     # LLM detection preview (does not call the API)
     if not args.no_llm:
@@ -213,6 +243,11 @@ async def _main() -> int:
             run_timeout=args.timeout,
             instruction=instruction,
             use_llm=not args.no_llm,
+            run_reboot=run_reboot,
+            probe_interval=args.probe_interval,
+            probe_confirm_count=args.probe_confirm,
+            warmup_time=args.warmup,
+            max_recover_timeout=args.max_recover,
         )
     except asyncio.TimeoutError:
         print("\nERROR: run timed out after", args.timeout, "s")
@@ -233,6 +268,7 @@ async def _main() -> int:
     print(f"  Verdict dist:  {decisions}")
     print(f"  Final verdict: {result['loop'].verdict.decision}")
     print(f"  Worker state:  {result['worker'].state}")
+    print(f"  Last stages:   {result['worker']._last_work_stages}")
 
     # Exit code: 0 if all pass, 1 if any fail
     return 0 if all(r.verdict == "pass" for r in history) else 1

@@ -20,6 +20,7 @@ class FakeHikvisionClient:
         self._win_start = self._now_iso()
         self._win_end = self._win_start
         self._door_open = False
+        self._reboot_called = False
 
     def _now_iso(self) -> str:
         t = datetime.now(timezone(timedelta(hours=8))) + timedelta(seconds=self._skew)
@@ -48,6 +49,7 @@ class FakeHikvisionClient:
         return {"status": "ok"}
 
     def reboot(self) -> Dict[str, Any]:
+        self._reboot_called = True
         return {"status": "ok"}
 
     def get_time(self) -> Dict[str, Any]:

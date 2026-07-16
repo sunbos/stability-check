@@ -108,11 +108,18 @@ async def run_hikvision_stability(
     instruction: str = "",
     llm_parse: Callable[[str], Dict] | None = None,
     llm_decide: Callable[[dict], str] | None = None,
+    *,
+    run_reboot: bool = True,
+    probe_interval: float = 5.0,
+    probe_confirm_count: int = 2,
+    warmup_time: float = 60.0,
+    max_recover_timeout: float = 180.0,
 ) -> dict:
     """Run a Hikvision door stability test session end-to-end.
 
     Auto-detects real LLM if env / .env provides a key; explicit params win.
-    Returns a dict with ctx/loop/worker/advisor/telemetry/config for assertions.
+    Reboot/probe/warmup config (spec §4.1, §4.2, §6 worker.*) forwarded to
+    HikvisionWorker. Returns a dict with ctx/loop/worker/advisor/telemetry/config.
     """
     if llm_parse is None:
         llm_parse = _make_llm_parse() or _default_parse
@@ -149,6 +156,11 @@ async def run_hikvision_stability(
                   subscriptions=["hikvision/plan"]),
         adapter, client, time_skew_threshold=3.0,
         diagnostic=diagnostic,
+        run_reboot=run_reboot,
+        probe_interval=probe_interval,
+        probe_confirm_count=probe_confirm_count,
+        warmup_time=warmup_time,
+        max_recover_timeout=max_recover_timeout,
     )
     # Patch handle BEFORE start() so _dispatch picks up the new attribute
     _patch_worker_plan_handler(worker)
@@ -162,7 +174,10 @@ async def run_hikvision_stability(
         bus, AgentSpec(id="o1", role="scribe",
                        subscriptions=["loop/done", "agent/incident", "target/#"]),
     )
-    dog = Watchdog(bus, stall_timeout=300.0, check_interval=0.05)
+    # Watchdog stall_timeout must exceed max_recover_timeout + warmup_time
+    # (reboot phase can block do_work for that long in a thread).
+    stall_timeout = max(300.0, max_recover_timeout + warmup_time + 60.0)
+    dog = Watchdog(bus, stall_timeout=stall_timeout, check_interval=0.05)
 
     for a in (worker, advisor, scribe, dog):
         await a.start()

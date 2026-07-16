@@ -1,14 +1,19 @@
 """HikvisionWorker: door-open test execution + event-chain assertion + self-heal.
 
 Pipeline (inherited, customized):
-  do_work(tick)  -> remote_open_door via adapter
+  do_work(tick)  -> [reboot -> wait_online -> warmup] -> remote_open_door
+                    (reboot phases only when run_reboot=True and plan.skip_reboot=False)
   recover(tick)  -> async: parallel query 3 events via asyncio.to_thread;
                     if missing + time skew > threshold, run LLM diagnostic
                     kernel -> time_sync heal.
   check(tick)    -> sync: assert 3-event chain facts from cached query results.
+
+spec §3.1.3 long-IO rule: do_work may block 60-180s (reboot + probe + warmup),
+so act() wraps it with asyncio.to_thread to avoid stalling the event loop.
 """
 
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
@@ -34,17 +39,114 @@ def _iso_seconds_ago(seconds: int) -> str:
 class HikvisionWorker(WorkerAgent):
     def __init__(self, bus: EventBus, spec: AgentSpec, adapter: HikvisionAdapter,
                  client, time_skew_threshold: float = 3.0,
-                 diagnostic: DiagnosticKernel = None) -> None:
+                 diagnostic: DiagnosticKernel = None,
+                 *,
+                 run_reboot: bool = True,
+                 probe_interval: float = 5.0,
+                 probe_confirm_count: int = 2,
+                 warmup_time: float = 60.0,
+                 max_recover_timeout: float = 180.0) -> None:
         super().__init__(bus, spec, adapter)
         self._client = client
         self._time_skew_threshold = time_skew_threshold
         self._diagnostic = diagnostic
         self._last_events: Dict[str, list] = {"trigger": [], "opened": [], "closed": []}
         self._healed: Any = None
+        # Reboot + probe + warmup config (spec §4.1, §4.2, §6 worker.*)
+        self._run_reboot = run_reboot
+        self._probe_interval = probe_interval
+        self._probe_confirm_count = probe_confirm_count
+        self._warmup_time = warmup_time
+        self._max_recover_timeout = max_recover_timeout
+        # Track last do_work outcome for observability
+        self._last_work_stages: Dict[str, Any] = {}
+
+    async def act(self, tick: dict) -> None:
+        """Override base act() to run do_work in a thread.
+
+        do_work may block 60-180s (reboot + probe + warmup). Per spec §3.1.3,
+        long IO must be wrapped with asyncio.to_thread to avoid stalling the
+        event loop and disabling ControlLoop's timeout safety net.
+        """
+        result = await asyncio.to_thread(self.do_work, tick)
+        self.publish(
+            "target/acted",
+            {"role": self.role, "round": tick.get("round"), "result": result},
+        )
+        recovered = await self.recover(tick)
+        self.publish(
+            "target/recovered",
+            {"role": self.role, "round": tick.get("round"), "recovered": recovered},
+        )
+        facts = self.check(tick)
+        self.publish(
+            "target/checked",
+            {"role": self.role, "round": tick.get("round"), "facts": facts},
+        )
+        self.publish("agent/" + self.role + "/done", {"round": tick.get("round")})
 
     def do_work(self, tick: dict) -> Any:
+        """Execute the per-round test operation.
+
+        When run_reboot=True and plan.skip_reboot=False (default), the full
+        door-restart stability flow runs:
+          1. reboot device (PUT /ISAPI/System/reboot)
+          2. wait_online: poll get_work_status until probe_confirm_count
+             consecutive successes (spec §4.1) or max_recover_timeout
+          3. warmup: sleep warmup_time seconds (spec §6 worker.warmup_time)
+          4. remote_open_door (PUT /ISAPI/AccessControl/RemoteControl/door/N)
+        """
+        plan = self.state.get("plan", {}) or {}
+        skip_reboot = bool(plan.get("skip_reboot", False))
         op = tick.get("operation") or {"op": "remote_open_door"}
-        return self.adapter.act(op)
+        stages: Dict[str, Any] = {"op": op.get("op"), "skip_reboot": skip_reboot}
+
+        # Phase 1: reboot -> wait_online -> warmup
+        if self._run_reboot and not skip_reboot:
+            stages["reboot_started"] = True
+            reboot_res = self.adapter.act({"op": "reboot"})
+            if not reboot_res.ok:
+                stages["reboot_ok"] = False
+                stages["error"] = reboot_res.error
+                self._last_work_stages = stages
+                return reboot_res
+            stages["reboot_ok"] = True
+
+            online = self._wait_online()
+            stages["online"] = online
+            if not online:
+                from ...multi_agent.adapter import Result
+                self._last_work_stages = stages
+                return Result(ok=False, error="device did not come online "
+                                f"within {self._max_recover_timeout}s")
+            # warmup
+            time.sleep(self._warmup_time)
+            stages["warmup_done"] = True
+
+        # Phase 2: remote_open_door (or whatever op was requested)
+        result = self.adapter.act(op)
+        stages["act_ok"] = result.ok
+        self._last_work_stages = stages
+        return result
+
+    def _wait_online(self) -> bool:
+        """Poll device until probe_confirm_count consecutive successes.
+
+        spec §4.1: two consecutive HTTP 200 from /AcsWorkStatus confirms online
+        (avoids false positive from transient TCP bind during reboot).
+        """
+        deadline = time.monotonic() + self._max_recover_timeout
+        consecutive = 0
+        while time.monotonic() < deadline:
+            try:
+                self._client.get_work_status()
+                consecutive += 1
+                if consecutive >= self._probe_confirm_count:
+                    return True
+            except Exception:  # noqa: BLE001
+                consecutive = 0
+            time.sleep(self._probe_interval)
+        return False
 
     async def recover(self, tick: dict) -> bool:
         # Use a 30-second lookback window to reliably catch events generated
