@@ -7,12 +7,32 @@ tests/agents/device_client.py.
 """
 
 import json
+import re
 import secrets
 import string
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Tuple
+
+# Hikvision RemoteControl/door endpoint requires XML payload (JSON variant
+# returns "notSupport" on tested firmware). xmlns is mandatory.
+_REMOTE_OPEN_XML = (
+    '<RemoteControlDoor version="2.0" '
+    'xmlns="http://www.isapi.org/ver20/XMLSchema">'
+    "<cmd>open</cmd>"
+    "</RemoteControlDoor>"
+)
+
+# Strip microseconds from ISO 8601 timestamps. Hikvision rejects
+# "2026-07-17T03:29:00.978924+08:00" with badJsonContent; only
+# "2026-07-17T03:29:00+08:00" is accepted.
+_MICRO_SEC_RE = re.compile(r"\.\d+(?=[+\-Z]|$)")
+
+
+def _strip_microseconds(ts: str) -> str:
+    """Remove fractional seconds from an ISO 8601 timestamp."""
+    return _MICRO_SEC_RE.sub("", ts)
 
 
 class HikvisionClient:
@@ -78,27 +98,32 @@ class HikvisionClient:
     def _build_event_cond(self, major: int, minor: int,
                           start: str, end: str,
                           max_results: int = 24) -> Dict[str, Any]:
+        # Hikvision rejects timestamps with fractional seconds; strip them.
         return {"AcsEventCond": {
             "searchID": self._random_search_id(),
             "searchResultPosition": 0,
             "maxResults": max_results,
             "major": major,
             "minor": minor,
-            "startTime": start,
-            "endTime": end,
+            "startTime": _strip_microseconds(start),
+            "endTime": _strip_microseconds(end),
             "timeReverseOrder": True,
         }}
 
     def remote_open_door(self, door_no: int = 1) -> Dict[str, Any]:
-        """PUT /ISAPI/AccessControl/RemoteOpenDoor/<door>?format=json"""
-        path = f"/ISAPI/AccessControl/RemoteOpenDoor/{door_no}?format=json"
-        status, body = self._request("PUT", path, body={})
+        """PUT /ISAPI/AccessControl/RemoteControl/door/<door> with XML body.
+
+        The JSON variant /RemoteOpenDoor/<door>?format=json returns
+        "notSupport" on tested firmware; the XML RemoteControl endpoint is
+        the documented and working path (verified on DS-K1T502).
+        """
+        path = f"/ISAPI/AccessControl/RemoteControl/door/{door_no}"
+        status, body = self._request(
+            "PUT", path, body=_REMOTE_OPEN_XML.encode("utf-8"),
+            headers={"Content-Type": "application/xml"})
         if status != 200:
             raise RuntimeError(f"remote_open_door returned {status}")
-        try:
-            return json.loads(body.decode("utf-8")) if body else {}
-        except (ValueError, UnicodeDecodeError):
-            return {}
+        return self._parse_status_xml(body)
 
     def reboot(self) -> Dict[str, Any]:
         """PUT /ISAPI/System/reboot (returns XML with statusCode)."""
@@ -130,24 +155,56 @@ class HikvisionClient:
                 "statusString": _find("statusString")}
 
     def get_time(self) -> Dict[str, Any]:
-        """GET /ISAPI/System/time?format=json"""
-        status, body = self._request("GET", "/ISAPI/System/time?format=json")
+        """GET /ISAPI/System/time -> parse XML (firmware ignores ?format=json).
+
+        Returns ``{"Time": {"localTime": ..., "timeZone": ...}}`` to match
+        the JSON-shaped contract used by worker.py / fake client.
+        """
+        status, body = self._request("GET", "/ISAPI/System/time")
         if status != 200:
             raise RuntimeError(f"get_time returned {status}")
-        return json.loads(body.decode("utf-8"))
+        return self._parse_time_xml(body)
+
+    @staticmethod
+    def _parse_time_xml(xml_bytes: bytes) -> Dict[str, Any]:
+        """Parse <Time><localTime/><timeZone/>...</Time> -> {"Time": {...}}."""
+        try:
+            root = ET.fromstring(xml_bytes)
+        except ET.ParseError as e:
+            raise RuntimeError(f"XML parse failed: {e}") from e
+
+        def _local(tag: str) -> str:
+            return tag.split("}", 1)[-1] if "}" in tag else tag
+
+        fields: Dict[str, Any] = {}
+        for el in root.iter():
+            tag = _local(el.tag)
+            if tag in ("localTime", "timeZone", "timeMode", "IANA"):
+                fields[tag] = el.text
+        return {"Time": fields}
 
     def set_time(self, local_time: str,
                  timezone: str = "CST-8:00") -> Dict[str, Any]:
-        """PUT /ISAPI/System/time?format=json"""
-        payload = {"Time": {"localTime": local_time, "timeZone": timezone}}
+        """PUT /ISAPI/System/time with XML body.
+
+        Builds <Time><localTime>...</localTime><timeZone>...</timeZone></Time>
+        and sends as application/xml. Returns parsed ResponseStatus dict.
+        """
+        # Strip microseconds from local_time if present (Hikvision rejects them).
+        local_time = _strip_microseconds(local_time)
+        xml_body = (
+            '<Time version="2.0" '
+            'xmlns="http://www.isapi.org/ver20/XMLSchema">'
+            f"<localTime>{local_time}</localTime>"
+            f"<timeZone>{timezone}</timeZone>"
+            "</Time>"
+        ).encode("utf-8")
         status, body = self._request(
-            "PUT", "/ISAPI/System/time?format=json", body=payload)
+            "PUT", "/ISAPI/System/time", body=xml_body,
+            headers={"Content-Type": "application/xml"})
         if status != 200:
             raise RuntimeError(f"set_time returned {status}")
-        try:
-            return json.loads(body.decode("utf-8")) if body else {}
-        except (ValueError, UnicodeDecodeError):
-            return {}
+        return self._parse_status_xml(body)
 
     def get_work_status(self) -> Dict[str, Any]:
         """GET /ISAPI/AccessControl/AcsWorkStatus?format=json"""
