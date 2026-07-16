@@ -39,7 +39,8 @@ async def test_worker_check_all_events_present_passes():
     facts = worker.check(tick)
     assert facts["remote_open_triggered"] is True
     assert facts["lock_opened"] is True
-    assert facts["lock_closed"] is True
+    # lock_closed is a soft fact (non-bool dict), per spec §2.1
+    assert facts["lock_closed"]["found"] is True
 
 
 @pytest.mark.asyncio

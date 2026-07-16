@@ -10,6 +10,7 @@ import json
 import re
 import secrets
 import string
+import threading
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -53,13 +54,21 @@ class HikvisionClient:
         pwd_mgr.add_password(None, self._base, self._user, self._password)
         auth_handler = urllib.request.HTTPDigestAuthHandler(pwd_mgr)
         self._opener = urllib.request.build_opener(auth_handler)
+        # HTTPDigestAuthHandler caches nonce/nc state that is NOT thread-safe.
+        # Worker calls query_events via asyncio.to_thread in parallel; without
+        # a lock, concurrent requests corrupt the auth state (HTTP 401).
+        self._lock = threading.Lock()
 
     def _url(self, path: str) -> str:
         return self._base + path
 
     def _request(self, method: str, path: str, body: Any = None,
                  headers: Dict[str, str] = None) -> Tuple[int, bytes]:
-        """Send request, return (status_code, response_bytes). Raise on error."""
+        """Send request, return (status_code, response_bytes). Raise on error.
+
+        Serialized via self._lock because HTTPDigestAuthHandler's nonce/nc
+        state is not thread-safe (concurrent calls cause HTTP 401).
+        """
         url = self._url(path)
         data = None
         req_headers = dict(headers or {})
@@ -74,20 +83,21 @@ class HikvisionClient:
         req = urllib.request.Request(url, data=data, method=method)
         for k, v in req_headers.items():
             req.add_header(k, v)
-        try:
-            resp = self._opener.open(req, timeout=self._timeout)
-            return resp.getcode(), resp.read()
-        except urllib.error.HTTPError as e:
+        with self._lock:
             try:
-                body_bytes = e.read()
-            except Exception:  # noqa: BLE001
-                body_bytes = b""
-            raise RuntimeError(
-                f"HTTP {e.code} on {method} {url}: "
-                f"{body_bytes.decode('utf-8', 'replace')}"
-            ) from e
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"URL error on {method} {url}: {e.reason}") from e
+                resp = self._opener.open(req, timeout=self._timeout)
+                return resp.getcode(), resp.read()
+            except urllib.error.HTTPError as e:
+                try:
+                    body_bytes = e.read()
+                except Exception:  # noqa: BLE001
+                    body_bytes = b""
+                raise RuntimeError(
+                    f"HTTP {e.code} on {method} {url}: "
+                    f"{body_bytes.decode('utf-8', 'replace')}"
+                ) from e
+            except urllib.error.URLError as e:
+                raise RuntimeError(f"URL error on {method} {url}: {e.reason}") from e
 
     @staticmethod
     def _random_search_id(length: int = 32) -> str:
