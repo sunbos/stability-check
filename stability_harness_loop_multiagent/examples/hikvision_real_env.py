@@ -58,8 +58,24 @@ def _print_header(title: str) -> None:
     print("=" * 72)
 
 
-def _print_round(round_no: int, verdict: str, risk: float, facts: dict) -> None:
+def _print_round(round_no: int, verdict: str, risk: float, facts: dict,
+                 timeline: list = None) -> None:
     print(f"\n--- Round {round_no} ---")
+    # Print stage timeline first so the user can see what ran when.
+    if timeline:
+        print(f"  timeline ({len(timeline)} stages):")
+        prev_t = 0.0
+        for entry in timeline:
+            stage = entry.get("stage", "?")
+            ts = entry.get("ts", "")
+            t = float(entry.get("t", 0.0))
+            dt = t - prev_t
+            prev_t = t
+            # Compact one-line per stage with key extras (omitting ts/stage/t keys)
+            extras = {k: v for k, v in entry.items()
+                      if k not in ("stage", "ts", "t")}
+            extra_str = " ".join(f"{k}={v}" for k, v in extras.items()) if extras else ""
+            print(f"    [{t:7.2f}s +{dt:6.2f}s] {ts}  {stage}  {extra_str}".rstrip())
     print(f"  verdict: {verdict}")
     print(f"  risk:    {risk:.1f}")
     print(f"  facts:")
@@ -125,15 +141,21 @@ async def _run_with_progress(
         telemetry=tel,
     )
 
-    # Real-time progress printer: subscribe to loop/done BEFORE loop.start()
+    # Real-time progress printer: subscribe to loop/done BEFORE loop.start().
+    # `worker` is defined below; the closure captures it by reference, so it
+    # will be bound by the time the callback fires (after loop.start()).
     def _on_loop_done(_topic, msg):
         if not isinstance(msg, dict):
             return
+        # Snapshot the worker's per-round timeline (may be appended to
+        # concurrently, but list() gives a shallow copy good enough for print).
+        tl = list(getattr(worker, "_timeline", []))
         _print_round(
             msg.get("round", 0),
             msg.get("verdict", "?"),
             float(msg.get("risk", 0.0)),
             msg.get("facts", {}) or {},
+            timeline=tl,
         )
     bus.subscribe("loop/done", _on_loop_done)
 
@@ -280,7 +302,11 @@ async def _main() -> int:
     print(f"  Verdict dist:  {decisions}")
     print(f"  Final verdict: {result['loop'].verdict.decision}")
     print(f"  Worker state:  {result['worker'].state}")
-    print(f"  Last stages:   {result['worker']._last_work_stages}")
+    # Print last round's key stages (without full timeline, which was already
+    # printed live per-round). Show only the summary fields.
+    last_stages = dict(result['worker']._last_work_stages)
+    last_stages.pop("timeline", None)  # already printed in per-round output
+    print(f"  Last stages:   {last_stages}")
 
     # Exit code: 0 if all pass, 1 if any fail
     return 0 if all(r.verdict == "pass" for r in history) else 1

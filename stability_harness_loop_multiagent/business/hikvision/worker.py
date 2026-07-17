@@ -15,7 +15,7 @@ so act() wraps it with asyncio.to_thread to avoid stalling the event loop.
 import asyncio
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from ...harness.agent import AgentSpec
 from ...harness.bus import EventBus
@@ -67,6 +67,11 @@ class HikvisionWorker(WorkerAgent):
         self._max_recover_timeout = max_recover_timeout
         # Track last do_work outcome for observability
         self._last_work_stages: Dict[str, Any] = {}
+        # Per-round timeline of stage executions for observability.
+        # Each entry: {"stage": <name>, "ts": <iso>, "t": <seconds_since_round_start>, **extra}
+        # Reset at the start of each do_work(); appended by recover()/check() too.
+        self._timeline: List[Dict[str, Any]] = []
+        self._t0: float = 0.0  # monotonic start of current round
 
     async def act(self, tick: dict) -> None:
         """Override base act() to run do_work in a thread.
@@ -92,6 +97,18 @@ class HikvisionWorker(WorkerAgent):
         )
         self.publish("agent/" + self.role + "/done", {"round": tick.get("round")})
 
+    def _mark(self, stage: str, **extra: Any) -> None:
+        """Append a stage entry to the per-round timeline.
+
+        Thread-safe: list.append is atomic under CPython GIL, so calls
+        from do_work (running in a worker thread) and recover/check
+        (running in the event loop) can both append safely.
+        """
+        entry = {"stage": stage, "ts": _now_iso(),
+                 "t": round(time.monotonic() - self._t0, 2)}
+        entry.update(extra)
+        self._timeline.append(entry)
+
     def do_work(self, tick: dict) -> Any:
         """Execute the per-round test operation.
 
@@ -106,12 +123,18 @@ class HikvisionWorker(WorkerAgent):
         plan = self.state.get("plan", {}) or {}
         skip_reboot = bool(plan.get("skip_reboot", False))
         op = tick.get("operation") or {"op": "remote_open_door"}
-        stages: Dict[str, Any] = {"op": op.get("op"), "skip_reboot": skip_reboot}
+        # Reset per-round timeline at the start of do_work.
+        self._timeline = []
+        self._t0 = time.monotonic()
+        stages: Dict[str, Any] = {"op": op.get("op"), "skip_reboot": skip_reboot,
+                                  "timeline": self._timeline}
 
         # Phase 1: reboot -> wait_online -> warmup
         if self._run_reboot and not skip_reboot:
-            stages["reboot_started"] = True
+            self._mark("reboot_start")
             reboot_res = self.adapter.act({"op": "reboot"})
+            self._mark("reboot_done", ok=reboot_res.ok,
+                       error=None if reboot_res.ok else reboot_res.error)
             if not reboot_res.ok:
                 stages["reboot_ok"] = False
                 stages["error"] = reboot_res.error
@@ -119,7 +142,10 @@ class HikvisionWorker(WorkerAgent):
                 return reboot_res
             stages["reboot_ok"] = True
 
+            self._mark("probe_start", interval=self._probe_interval,
+                       confirm=self._probe_confirm_count)
             online = self._wait_online()
+            self._mark("probe_done", online=online)
             stages["online"] = online
             if not online:
                 from ...multi_agent.adapter import Result
@@ -127,11 +153,16 @@ class HikvisionWorker(WorkerAgent):
                 return Result(ok=False, error="device did not come online "
                                 f"within {self._max_recover_timeout}s")
             # warmup
+            self._mark("warmup_start", seconds=self._warmup_time)
             time.sleep(self._warmup_time)
+            self._mark("warmup_done")
             stages["warmup_done"] = True
 
         # Phase 2: remote_open_door (or whatever op was requested)
+        self._mark("act_start", op=op.get("op"))
         result = self.adapter.act(op)
+        self._mark("act_done", ok=result.ok,
+                   error=None if result.ok else result.error)
         stages["act_ok"] = result.ok
         if not result.ok:
             stages["act_error"] = result.error
@@ -163,6 +194,7 @@ class HikvisionWorker(WorkerAgent):
         # query. Use a wide 300s lookback to cover the full reboot cycle.
         # When run_reboot=False, 30s is ample (do_work is just a quick open).
         lookback = 300 if self._run_reboot else 30
+        self._mark("recover_start", lookback=lookback)
         # Compute query window in DEVICE time (spec §2.1 A.2): device event
         # log stores events with device time. After a reboot, device time may
         # drift (NTP not synced, factory default), so a host-time window would
@@ -175,6 +207,7 @@ class HikvisionWorker(WorkerAgent):
         except Exception:  # noqa: BLE001
             end = _now_iso()
         start = _iso_seconds_before(end, lookback)
+        self._mark("recover_query_start", start=start, end=end)
         # Parallel query across majors via asyncio.to_thread (adapter/client are sync).
         # Client is internally serialized via threading.Lock (digest auth not thread-safe),
         # so the 3 calls run sequentially under the lock but don't block the event loop.
@@ -193,19 +226,25 @@ class HikvisionWorker(WorkerAgent):
             self._last_events = {"trigger": [], "opened": [], "closed": []}
             self._recover_error = str(exc)
             self._healed = None
+            self._mark("recover_query_done", error=str(exc))
+            self._mark("recover_done", recovered=True)
             return True
         self._last_events = {"trigger": trigger, "opened": opened, "closed": closed}
+        self._mark("recover_query_done",
+                   trigger=len(trigger), opened=len(opened), closed=len(closed))
 
         # Self-heal: time skew if trigger missing and skew exceeds threshold.
         # NOTE: with device-time query window above, trigger is rarely missing
         # due to time drift alone. This branch handles genuine missing events
         # (e.g., device firmware bug, event log cleared on reboot).
         if not trigger and self._diagnostic is not None:
+            self._mark("heal_diagnose_start")
             skew = self._measure_time_skew()
             env = {"time_skew_seconds": skew,
                    "missing": self._missing_names(trigger, opened, closed),
                    "http_error": None}
             decision = self._diagnostic.diagnose(env)
+            self._mark("heal_diagnose_done", decision=decision, skew=round(skew, 2))
             if decision == HEAL_TIME_SYNC and skew > self._time_skew_threshold:
                 try:
                     self._client.set_time(_now_iso())
@@ -216,13 +255,18 @@ class HikvisionWorker(WorkerAgent):
                         self._client.query_events,
                         *HikEventCode.REMOTE_OPEN, start, end)
                     self._healed = "time_sync"
+                    self._mark("heal_time_sync_done",
+                               trigger=len(self._last_events["trigger"]))
                 except Exception:  # noqa: BLE001
                     self._healed = None
+                self._mark("recover_done", recovered=True, healed=self._healed)
                 return True
             self._healed = None
             if decision == HEAL_ABORT:
+                self._mark("recover_done", recovered=False, reason="heal_abort")
                 return False
         self._healed = None
+        self._mark("recover_done", recovered=True)
         return True
 
     def check(self, tick: dict) -> dict:
@@ -244,6 +288,10 @@ class HikvisionWorker(WorkerAgent):
             facts["lock_closed"] = {"found": False, "count": 0}
         if getattr(self, "_healed", None):
             facts["self_healed"] = self._healed  # non-bool truthy, won't fail
+        self._mark("check_done",
+                   remote_open_triggered=facts["remote_open_triggered"],
+                   lock_opened=facts["lock_opened"],
+                   lock_closed_found=facts["lock_closed"]["found"])
         return facts
 
     def _measure_time_skew(self) -> float:
