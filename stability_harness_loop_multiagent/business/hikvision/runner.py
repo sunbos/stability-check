@@ -114,12 +114,16 @@ async def run_hikvision_stability(
     probe_confirm_count: int = 2,
     warmup_time: float = 60.0,
     max_recover_timeout: float = 180.0,
+    event_check_delay: float = 3.0,
 ) -> dict:
     """Run a Hikvision door stability test session end-to-end.
 
     Auto-detects real LLM if env / .env provides a key; explicit params win.
     Reboot/probe/warmup config (spec §4.1, §4.2, §6 worker.*) forwarded to
-    HikvisionWorker. Returns a dict with ctx/loop/worker/advisor/telemetry/config.
+    HikvisionWorker. ``pre_loop_setup()`` is invoked AFTER the worker is
+    started (so it can publish) but BEFORE the loop starts, so the baseline
+    reboot duration is measured once and reused per round. Returns a dict
+    with ctx/loop/worker/advisor/telemetry/config.
     """
     if llm_parse is None:
         llm_parse = _make_llm_parse() or _default_parse
@@ -134,11 +138,12 @@ async def run_hikvision_stability(
     # ControlLoop waits max(recover_timeout, check_timeout) for target/checked
     # (driver.py §round). When run_reboot=True, reboot+probe+warmup can take
     # max_recover_timeout + warmup_time; add buffer for probe + open + query.
-    # When run_reboot=False, do_work is just a quick remote_open_door (2s ample).
+    # When run_reboot=False, do_work is remote_open_door + event_check_delay
+    # + event query; size timeout to cover the delay plus a small buffer.
     if run_reboot:
         round_act_timeout = max_recover_timeout + warmup_time + 30.0
     else:
-        round_act_timeout = 2.0
+        round_act_timeout = event_check_delay + 5.0
     cfg = RunConfig(max_rounds=max_rounds, max_duration=0.0, fail_threshold=10_000,
                     vote_timeout=0.1, recover_timeout=round_act_timeout,
                     check_timeout=round_act_timeout, recheck_limit=0)
@@ -173,6 +178,7 @@ async def run_hikvision_stability(
         probe_confirm_count=probe_confirm_count,
         warmup_time=warmup_time,
         max_recover_timeout=max_recover_timeout,
+        event_check_delay=event_check_delay,
     )
     # Patch handle BEFORE start() so _dispatch picks up the new attribute
     _patch_worker_plan_handler(worker)
@@ -193,6 +199,12 @@ async def run_hikvision_stability(
 
     for a in (worker, advisor, scribe, dog):
         await a.start()
+    # Pre-loop setup: record baseline + baseline reboot + measure duration.
+    # Done AFTER worker.start() (so it can publish) but BEFORE loop.start()
+    # so the measured baseline_reboot_duration is available to do_work().
+    # Run in a thread because pre_loop_setup may block 60-180s on the
+    # baseline reboot probe; this must not stall the event loop.
+    await asyncio.to_thread(worker.pre_loop_setup)
     # Advisor publishes hikvision/plan during start(); worker caches it.
     # Start loop AFTER advisor so the plan is already enqueued.
     await loop.start()

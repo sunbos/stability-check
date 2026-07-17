@@ -6,10 +6,18 @@ from tests.fakes.fake_hikvision import FakeHikvisionClient
 
 @pytest.mark.asyncio
 async def test_runner_completes_with_fake_client():
+    """run_reboot=False: loop completes 3 rounds within timeout.
+
+    Using run_reboot=False + event_check_delay=0.0 avoids the ~60s baseline
+    reboot probe in pre_loop_setup and keeps each round ~5s. The reboot
+    flow is covered by test_hikvision_worker.py.
+    """
     result = await run_hikvision_stability(
         client=FakeHikvisionClient(),
         max_rounds=3,
-        run_timeout=10.0,
+        run_timeout=30.0,
+        run_reboot=False,
+        event_check_delay=0.0,
     )
     ctx = result["ctx"]
     assert ctx.round_count == 3
@@ -20,11 +28,14 @@ async def test_runner_completes_with_fake_client():
 
 @pytest.mark.asyncio
 async def test_runner_worker_subscribes_plan():
+    """Worker caches hikvision/plan published by Advisor during start()."""
     result = await run_hikvision_stability(
         client=FakeHikvisionClient(),
         max_rounds=1,
-        run_timeout=10.0,
+        run_timeout=30.0,
         instruction="skip reboot",
+        run_reboot=False,
+        event_check_delay=0.0,
     )
     worker = result["worker"]
     # Worker should have cached plan from advisor

@@ -96,12 +96,15 @@ async def _run_with_progress(
     probe_confirm_count: int = 2,
     warmup_time: float = 60.0,
     max_recover_timeout: float = 180.0,
+    event_check_delay: float = 3.0,
 ) -> dict:
     """Custom runner that prints per-round progress in real time.
 
     Mirrors run_hikvision_stability but subscribes a printer to loop/done
     BEFORE loop.start() so the user sees each round live. Reboot/probe/warmup
-    config (spec §4.1, §4.2, §6) forwarded to HikvisionWorker.
+    config (spec §4.1, §4.2, §6) forwarded to HikvisionWorker. Also runs
+    ``worker.pre_loop_setup()`` before the loop starts so the baseline
+    reboot duration is measured once and reused per round.
     """
     if use_llm:
         llm_parse = _make_llm_parse() or _default_parse
@@ -175,6 +178,7 @@ async def _run_with_progress(
         probe_confirm_count=probe_confirm_count,
         warmup_time=warmup_time,
         max_recover_timeout=max_recover_timeout,
+        event_check_delay=event_check_delay,
     )
     _patch_worker_plan_handler(worker)
 
@@ -193,6 +197,18 @@ async def _run_with_progress(
 
     for a in (worker, advisor, scribe, dog):
         await a.start()
+    # Pre-loop setup: record baseline + baseline reboot + measure duration.
+    # Done AFTER worker.start() (so it can publish) but BEFORE loop.start()
+    # so the measured baseline_reboot_duration is available to do_work().
+    # Run in a thread because pre_loop_setup may block 60-180s on the
+    # baseline reboot probe; this must not stall the event loop. Print the
+    # measured duration so the user sees the pre-loop baseline.
+    print("\n--- Pre-loop setup (baseline + baseline reboot) ---")
+    setup_info = await asyncio.to_thread(worker.pre_loop_setup)
+    duration = setup_info.get("baseline_reboot_duration", 0.0)
+    print(f"  baseline_reboot_duration: {duration:.2f}s")
+    print(f"  baseline serialNos: {setup_info.get('baseline', {}).get('serialNos', {})}")
+    print(f"  setup_done: {setup_info.get('setup_done')}")
     await loop.start()
     try:
         await asyncio.wait_for(loop._task, run_timeout)
@@ -228,6 +244,9 @@ async def _main() -> int:
                         help="Consecutive successes to confirm online (spec §4.1, default 2)")
     parser.add_argument("--max-recover", type=float, default=180.0,
                         help="Max seconds to wait for device online after reboot (default 180)")
+    parser.add_argument("--event-delay", type=float, default=3.0,
+                        help="Seconds to wait after remote_open_door before querying "
+                             "event log (spec §6 worker.event_check_delay, default 3)")
     args = parser.parse_args()
 
     # Device config: env (BURNIN_*) -> CLI args -> master defaults
@@ -247,6 +266,7 @@ async def _main() -> int:
     if run_reboot:
         print(f"  probe_interval={args.probe_interval}s, probe_confirm={args.probe_confirm}, "
               f"warmup={args.warmup}s, max_recover={args.max_recover}s")
+    print(f"  event_check_delay={args.event_delay}s")
 
     # LLM detection preview (does not call the API)
     if not args.no_llm:
@@ -282,6 +302,7 @@ async def _main() -> int:
             probe_confirm_count=args.probe_confirm,
             warmup_time=args.warmup,
             max_recover_timeout=args.max_recover,
+            event_check_delay=args.event_delay,
         )
     except asyncio.TimeoutError:
         print("\nERROR: run timed out after", args.timeout, "s")
