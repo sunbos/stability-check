@@ -13,7 +13,8 @@ from typing import Any, Dict, List
 class FakeHikvisionClient:
     """In-memory client implementing the same surface as HikvisionClient."""
 
-    def __init__(self, time_skew_seconds: float = 0.0) -> None:
+    def __init__(self, time_skew_seconds: float = 0.0,
+                 restart_duration: float = 0.05) -> None:
         self._events: List[Dict[str, Any]] = []
         self._serial = 0
         self._skew = time_skew_seconds
@@ -21,6 +22,13 @@ class FakeHikvisionClient:
         self._win_end = self._win_start
         self._door_open = False
         self._reboot_called = False
+        # Simulate device going offline during reboot. After reboot() is
+        # called, get_work_status() raises ConnectionError for
+        # restart_duration seconds, then succeeds again. This lets the
+        # three-phase _wait_online logic (offline -> back -> confirm)
+        # work correctly in unit tests.
+        self._restart_duration = restart_duration
+        self._reboot_at: float = 0.0
 
     def _now_iso(self) -> str:
         t = datetime.now(timezone(timedelta(hours=8))) + timedelta(seconds=self._skew)
@@ -50,6 +58,7 @@ class FakeHikvisionClient:
 
     def reboot(self) -> Dict[str, Any]:
         self._reboot_called = True
+        self._reboot_at = time.monotonic()
         return {"status": "ok"}
 
     def get_time(self) -> Dict[str, Any]:
@@ -61,6 +70,14 @@ class FakeHikvisionClient:
         return {"status": "ok"}
 
     def get_work_status(self) -> Dict[str, Any]:
+        # Simulate device offline during reboot window. After reboot(),
+        # get_work_status raises ConnectionError for restart_duration
+        # seconds, then succeeds. This mirrors real device behavior where
+        # HTTP service is unavailable during the 30-60s restart cycle.
+        if self._reboot_at > 0:
+            elapsed = time.monotonic() - self._reboot_at
+            if elapsed < self._restart_duration:
+                raise ConnectionError("device rebooting (simulated)")
         return {"AcsWorkStatus": {"cardReaderOnlineStatus": "true"}}
 
     def query_events(self, major: int, minor: int,

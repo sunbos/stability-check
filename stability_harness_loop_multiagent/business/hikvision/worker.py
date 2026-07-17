@@ -72,6 +72,13 @@ class HikvisionWorker(WorkerAgent):
         # Reset at the start of each do_work(); appended by recover()/check() too.
         self._timeline: List[Dict[str, Any]] = []
         self._t0: float = 0.0  # monotonic start of current round
+        # Baseline recorded before the FIRST reboot: stores the latest serialNo
+        # of each event type so post-reboot queries can filter out pre-existing
+        # events and only count new ones from this round's remote_open_door.
+        # This solves the "trigger=2" issue where the 300s lookback window
+        # contains residual events from previous rounds.
+        self._baseline: Dict[str, Any] = {}
+        self._baseline_recorded: bool = False
 
     async def act(self, tick: dict) -> None:
         """Override base act() to run do_work in a thread.
@@ -109,16 +116,67 @@ class HikvisionWorker(WorkerAgent):
         entry.update(extra)
         self._timeline.append(entry)
 
+    def _record_baseline(self) -> None:
+        """Record device baseline before the FIRST reboot.
+
+        Captures device time and the latest serialNo of each event type
+        (remote_open, lock_open, lock_close) so that post-reboot queries
+        can filter out pre-existing events. Only the first reboot records
+        baseline; subsequent rounds use the updated serialNo from the
+        previous round's recover() as the new baseline.
+
+        This is essential for the reboot stability test: without it, the
+        300s lookback window would contain residual events from previous
+        rounds, inflating counts (e.g., trigger=2 instead of 1).
+        """
+        try:
+            device_time = self._client.get_time()["Time"]["localTime"]
+        except Exception:  # noqa: BLE001
+            device_time = _now_iso()
+        # Query recent events (5 min lookback) to find the latest serialNo
+        start = _iso_seconds_before(device_time, 300)
+        serials: Dict[str, int] = {}
+        for name, code in (("trigger", HikEventCode.REMOTE_OPEN),
+                           ("opened", HikEventCode.LOCK_OPEN),
+                           ("closed", HikEventCode.LOCK_CLOSE)):
+            try:
+                events = self._client.query_events(*code, start, device_time)
+                serials[name] = max(
+                    (int(e.get("serialNo", 0)) for e in events),
+                    default=0)
+            except Exception:  # noqa: BLE001
+                serials[name] = 0
+        self._baseline = {"device_time": device_time, "serialNos": serials}
+        self._baseline_recorded = True
+
+    def _update_baseline_from_events(self) -> None:
+        """Update baseline serialNos from this round's recovered events.
+
+        Called at the end of recover() so the next round's filter uses the
+        latest known serialNo as its baseline. This ensures each round only
+        counts events produced AFTER the previous round.
+        """
+        if not self._baseline_recorded:
+            return
+        serials = self._baseline.setdefault("serialNos", {})
+        for name in ("trigger", "opened", "closed"):
+            events = self._last_events.get(name, [])
+            if events:
+                current_max = max(int(e.get("serialNo", 0)) for e in events)
+                if current_max > serials.get(name, 0):
+                    serials[name] = current_max
+
     def do_work(self, tick: dict) -> Any:
         """Execute the per-round test operation.
 
         When run_reboot=True and plan.skip_reboot=False (default), the full
         door-restart stability flow runs:
-          1. reboot device (PUT /ISAPI/System/reboot)
-          2. wait_online: poll get_work_status until probe_confirm_count
-             consecutive successes (spec §4.1) or max_recover_timeout
-          3. warmup: sleep warmup_time seconds (spec §6 worker.warmup_time)
-          4. remote_open_door (PUT /ISAPI/AccessControl/RemoteControl/door/N)
+          1. (first round only) record baseline: device time + last serialNo
+          2. reboot device (PUT /ISAPI/System/reboot)
+          3. wait_online: wait for device to go offline (reboot takes effect),
+             then come back, then confirm with probe_confirm_count successes
+          4. warmup: sleep warmup_time seconds (spec §6 worker.warmup_time)
+          5. remote_open_door (PUT /ISAPI/AccessControl/RemoteControl/door/N)
         """
         plan = self.state.get("plan", {}) or {}
         skip_reboot = bool(plan.get("skip_reboot", False))
@@ -129,8 +187,14 @@ class HikvisionWorker(WorkerAgent):
         stages: Dict[str, Any] = {"op": op.get("op"), "skip_reboot": skip_reboot,
                                   "timeline": self._timeline}
 
-        # Phase 1: reboot -> wait_online -> warmup
+        # Phase 1: baseline (first round) -> reboot -> wait_online -> warmup
         if self._run_reboot and not skip_reboot:
+            # Record baseline before first reboot (spec: first-reboot baseline)
+            if not self._baseline_recorded:
+                self._mark("baseline_start")
+                self._record_baseline()
+                self._mark("baseline_done", **self._baseline)
+
             self._mark("reboot_start")
             reboot_res = self.adapter.act({"op": "reboot"})
             self._mark("reboot_done", ok=reboot_res.ok,
@@ -170,20 +234,47 @@ class HikvisionWorker(WorkerAgent):
         return result
 
     def _wait_online(self) -> bool:
-        """Poll device until probe_confirm_count consecutive successes.
+        """Wait for device to reboot and come back online (spec §4.1).
 
-        spec §4.1: two consecutive HTTP 200 from /AcsWorkStatus confirms online
-        (avoids false positive from transient TCP bind during reboot).
+        Three phases (the old code skipped phase 1, falsely detecting
+        "online" in ~2s because the device keeps serving HTTP for a few
+        seconds after the reboot PUT returns 200, before actually
+        restarting):
+
+        1. Wait for device to go OFFLINE: the reboot PUT returns 200
+           immediately, but the device keeps serving HTTP for a few seconds
+           before actually restarting. We detect reboot-take-effect by the
+           first get_work_status failure.
+        2. Wait for device to come BACK: poll until get_work_status succeeds
+           again (device finished rebooting, HTTP service restored).
+        3. Confirm: require probe_confirm_count consecutive successes to
+           rule out transient TCP bind during early boot (spec §4.1).
+
+        Real device reboot takes 30-60s; phase 1 (~2-5s) + phase 2 (~30-60s)
+        + phase 3 (~probe_interval*confirm) should fit within max_recover_timeout.
         """
         deadline = time.monotonic() + self._max_recover_timeout
         consecutive = 0
+        offline_seen = False
         while time.monotonic() < deadline:
             try:
                 self._client.get_work_status()
+                if not offline_seen:
+                    # Phase 1: device still up, reboot hasn't taken effect.
+                    # Keep polling until we see a failure (device going down).
+                    time.sleep(self._probe_interval)
+                    continue
+                # Phase 3: confirm online with consecutive successes
                 consecutive += 1
+                if consecutive == 1:
+                    self._mark("probe_back_online")
                 if consecutive >= self._probe_confirm_count:
                     return True
             except Exception:  # noqa: BLE001
+                if not offline_seen:
+                    # Phase 1 complete: reboot took effect, device going down
+                    offline_seen = True
+                    self._mark("probe_offline_seen")
                 consecutive = 0
             time.sleep(self._probe_interval)
         return False
@@ -229,9 +320,26 @@ class HikvisionWorker(WorkerAgent):
             self._mark("recover_query_done", error=str(exc))
             self._mark("recover_done", recovered=True)
             return True
+        # Filter out pre-baseline events: only count events with serialNo
+        # greater than the baseline (recorded before first reboot / updated
+        # from previous round). This ensures each round only counts NEW
+        # events produced by THIS round's remote_open_door, not residual
+        # events from previous rounds still within the 300s lookback window.
+        raw_counts = {"trigger": len(trigger), "opened": len(opened),
+                      "closed": len(closed)}
+        if self._baseline_recorded:
+            base_serials = self._baseline.get("serialNos", {})
+            trigger = [e for e in trigger
+                       if int(e.get("serialNo", 0)) > base_serials.get("trigger", 0)]
+            opened = [e for e in opened
+                      if int(e.get("serialNo", 0)) > base_serials.get("opened", 0)]
+            closed = [e for e in closed
+                      if int(e.get("serialNo", 0)) > base_serials.get("closed", 0)]
         self._last_events = {"trigger": trigger, "opened": opened, "closed": closed}
         self._mark("recover_query_done",
-                   trigger=len(trigger), opened=len(opened), closed=len(closed))
+                   raw=raw_counts,
+                   filtered={"trigger": len(trigger), "opened": len(opened),
+                             "closed": len(closed)})
 
         # Self-heal: time skew if trigger missing and skew exceeds threshold.
         # NOTE: with device-time query window above, trigger is rarely missing
@@ -251,14 +359,21 @@ class HikvisionWorker(WorkerAgent):
                     # Re-query trigger after heal using the SAME device-time
                     # window (event was recorded at pre-sync device time D1,
                     # which is within [device_now - lookback, device_now]).
-                    self._last_events["trigger"] = await asyncio.to_thread(
+                    retrigger = await asyncio.to_thread(
                         self._client.query_events,
                         *HikEventCode.REMOTE_OPEN, start, end)
+                    # Apply same baseline filter to re-queried trigger
+                    if self._baseline_recorded:
+                        base_t = self._baseline.get("serialNos", {}).get("trigger", 0)
+                        retrigger = [e for e in retrigger
+                                     if int(e.get("serialNo", 0)) > base_t]
+                    self._last_events["trigger"] = retrigger
                     self._healed = "time_sync"
                     self._mark("heal_time_sync_done",
                                trigger=len(self._last_events["trigger"]))
                 except Exception:  # noqa: BLE001
                     self._healed = None
+                self._update_baseline_from_events()
                 self._mark("recover_done", recovered=True, healed=self._healed)
                 return True
             self._healed = None
@@ -266,6 +381,7 @@ class HikvisionWorker(WorkerAgent):
                 self._mark("recover_done", recovered=False, reason="heal_abort")
                 return False
         self._healed = None
+        self._update_baseline_from_events()
         self._mark("recover_done", recovered=True)
         return True
 
