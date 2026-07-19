@@ -137,3 +137,115 @@ def _print_round(round_no, total_rounds, verdict, risk, facts,
         print("  事实:")
         for k, v in facts.items():
             print(f"    - {k}: {v}")
+
+
+# ---------------------------------------------------------------------------
+# 公共 API（hikvision 稳定性测试场景用）：单轮报告 / 最终汇总 / 分节标题。
+# 与上方带下划线前缀的内部辅助（_kv / _flush_kv / _print_round）并存：
+# 内部辅助面向 examples/generic_harness.py 的细粒度组合原语，公共 API
+# 面向 hikvision 稳定性测试场景的「一行一个表格」接口（plan §PR5 Task 5.1）。
+# ---------------------------------------------------------------------------
+
+
+def print_round_report(round_no: int, verdict: str, facts: dict,
+                       remote_open: str = "N/A", lock_open: str = "N/A",
+                       lock_closed: str = "N/A", recovered: str = "N/A") -> None:
+    """打印单轮稳定性测试报告（rich 表格 / 标准库回退）。
+
+    与 plan §PR5 Task 5.1 一致：固定 6 行指标（Verdict / probe_ok /
+    remote_open / lock_open / lock_closed / recovered），调用方零排版负担。
+    Verdict 行按通过/失败配色高亮，便于在长日志中一眼定位异常轮次。
+    """
+    vmark = {"pass": "PASS", "fail": "FAIL", "warn": "WARN",
+             "recheck": "RECHECK", "abort": "ABORT"}.get(verdict, str(verdict).upper())
+    color = _VCOLOR.get(verdict, "white")
+    probe_ok = str(facts.get("probe_ok", "N/A")) if isinstance(facts, dict) else "N/A"
+    rows = [
+        ("Verdict", vmark),
+        ("probe_ok", probe_ok),
+        ("remote_open", str(remote_open)),
+        ("lock_open", str(lock_open)),
+        ("lock_closed", str(lock_closed)),
+        ("recovered", str(recovered)),
+    ]
+    if _RICH:
+        table = Table(title=f"Round {round_no}", show_lines=True, box=box.SQUARE)
+        table.add_column("指标", style="cyan", no_wrap=True)
+        table.add_column("值", style="magenta")
+        for k, v in rows:
+            # Verdict 行带颜色高亮（直观区分通过/失败/中止）
+            if k == "Verdict":
+                table.add_row(
+                    _rich_escape(k),
+                    f"[bold {color}]{_rich_escape(v)}[/bold {color}]",
+                )
+            else:
+                table.add_row(_rich_escape(k), _rich_escape(v))
+        _CONSOLE.print(table)
+        return
+    # 标准库回退（与上方 _print_round 风格一致）
+    _print_header(f"ROUND {round_no}")
+    w = max(_disp_len(k) for k, _ in rows)
+    for k, v in rows:
+        print(f"  {_pad(k, w)}  {v}")
+
+
+def print_final_summary(rounds: list[dict]) -> None:
+    """打印最终汇总表（rich 表格 / 标准库回退）。
+
+    每行一轮，列：轮次 / Verdict / remote_open / lock_open / lock_closed /
+    recovered。Verdict 单元格按通过/失败配色高亮，便于在多轮结果中一眼
+    发现异常轮次。
+    """
+    headers = ["轮次", "Verdict", "remote_open", "lock_open",
+               "lock_closed", "recovered"]
+    if _RICH:
+        table = Table(title="稳定性测试结果汇总", show_lines=True, box=box.SQUARE)
+        table.add_column(headers[0], justify="right", style="cyan", no_wrap=True)
+        table.add_column(headers[1], style="magenta")
+        for h in headers[2:]:
+            table.add_column(h)
+        for r in rounds:
+            v = r.get("verdict", "?")
+            color = _VCOLOR.get(v, "white")
+            vmark = {"pass": "PASS", "fail": "FAIL", "warn": "WARN",
+                     "recheck": "RECHECK", "abort": "ABORT"}.get(
+                v, str(v).upper())
+            table.add_row(
+                str(r.get("round", "?")),
+                f"[bold {color}]{vmark}[/bold {color}]",
+                str(r.get("remote_open", "N/A")),
+                str(r.get("lock_open", "N/A")),
+                str(r.get("lock_closed", "N/A")),
+                str(r.get("recovered", "N/A")),
+            )
+        _CONSOLE.print(table)
+        return
+    # 标准库回退
+    _print_header("SUMMARY · 稳定性测试结果汇总")
+    widths = [_disp_len(h) for h in headers]
+    print("  " + "  ".join(_pad(h, w) for h, w in zip(headers, widths)))
+    print("  " + "  ".join("-" * w for w in widths))
+    for r in rounds:
+        cells = [
+            str(r.get("round", "?")),
+            str(r.get("verdict", "?")),
+            str(r.get("remote_open", "N/A")),
+            str(r.get("lock_open", "N/A")),
+            str(r.get("lock_closed", "N/A")),
+            str(r.get("recovered", "N/A")),
+        ]
+        print("  " + "  ".join(_pad(c, w) for c, w in zip(cells, widths)))
+
+
+def print_section(title: str) -> None:
+    """打印分节标题（rich rule / 标准库回退）。
+
+    用于在长输出中划分阶段（如「Pre-loop Setup」「Round 1」「Summary」），
+    与 _print_header 区别在于：print_section 是公共 API（无下划线前缀），
+    由 hikvision 稳定性测试场景调用；_print_header 是内部辅助。
+    """
+    if _RICH:
+        _CONSOLE.rule(f"[bold cyan]{_rich_escape(title)}[/bold cyan]")
+        return
+    _print_header(title)
