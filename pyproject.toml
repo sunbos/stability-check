@@ -7,9 +7,11 @@ name = "stability-harness-loop-multiagent"
 version = "0.1.0"
 requires-python = ">=3.10"
 description = "Domain-agnostic autonomous loop harness (three-engine architecture)"
-dependencies = []  # Entire project: zero third-party runtime deps, stdlib only
+dependencies = []  # 框架核心：零第三方运行时依赖，仅标准库（业务层依赖见 business extras）
 
 [project.optional-dependencies]
+# 业务层（business/hikvision）可选依赖：httpx/httpx-auth 真机 ISAPI、
+# openai LLM 兜底、pydantic 校验、PyYAML 场景解析；框架核心仍零运行时依赖。
 business = [
     "httpx>=0.27",
     "httpx-auth>=0.22",
