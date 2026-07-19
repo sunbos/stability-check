@@ -1,0 +1,56 @@
+name: Deploy docs to GitHub Pages
+
+# 部署方式：官方 Actions 模式（GitHub Pages 原生）。
+# 构建产物经 upload-pages-artifact 上传，再由 deploy-pages 部署。
+# 对应仓库设置：Settings → Pages → Source 选择 "GitHub Actions"。
+# 说明：2026-07 期间 deploy-pages 曾因平台 bug 返回 404（community #200823），
+# 现已切回官方模式；若再次 404，可临时回退 legacy 分支部署（见 git 历史）。
+
+on:
+  push:
+    branches: [master, feat/stability-harness-loop-multiagent]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - '.github/workflows/mkdocs-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install mkdocs dependencies
+        run: |
+          pip install --upgrade pip
+          pip install mkdocs-material mkdocstrings[python]
+      - name: Build site
+        run: mkdocs build --strict
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

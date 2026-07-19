@@ -16,3 +16,7 @@ _probe.log
 
 # Office 临时锁文件（Excel/Word 打开时自动生成）
 ~$*
+
+# MkDocs 构建产物（GitHub Pages 站点，由 CI 生成）
+site/
+.mkdocs_cache/
