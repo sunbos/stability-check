@@ -195,46 +195,18 @@ def get_client() -> "OpenAICompatibleClient | None":
     return OpenAICompatibleClient(api_key=key, model=model, base_url=base_url)
 
 
-def chat_json(client, system_prompt: str, user_prompt: str,
+def chat_json(client: Optional["OpenAICompatibleClient"], system_prompt: str,
+              user_prompt: str,
               response_model: Optional[type[BaseModel]] = None) -> Optional[dict]:
-    """模块级 ``chat_json``（新接口，供 advisor.py Task 2.3 等新代码使用）。
+    """模块级便捷函数：调用 ``OpenAICompatibleClient.chat_json``。
 
-    - ``client`` 为 None：返回 None（调用方回退规则兜底）
-    - ``client`` 是 ``OpenAICompatibleClient``：委托其 ``.chat_json(response_model=...)``
-    - ``client`` 是原生 ``OpenAI``：按 openai SDK 直接调用（通用兜底）
+    供 Task 2.3 的 advisor.py 用（以模块级函数形式调用 LLM）。
+    ``client`` 为 ``None`` 时返回 ``None``（调用方回退规则兜底）。
     """
     if client is None:
         return None
-    if isinstance(client, OpenAICompatibleClient):
-        return client.chat_json(system_prompt, user_prompt,
-                                response_model=response_model)
-    # 原生 OpenAI 客户端路径（get_client() 不会返回此类型，留作通用兜底）
-    model = os.environ.get("LLM_MODEL", DEFAULT_MODEL)
-    try:
-        if response_model is not None:
-            completion = client.beta.chat.completions.parse(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format=response_model,
-            )
-            parsed = completion.choices[0].message.parsed
-            return parsed.model_dump() if parsed else None
-        completion = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.0,
-            max_tokens=512,
-        )
-        return _extract_first_json(completion.choices[0].message.content or "")
-    except Exception as exc:  # noqa: BLE001 - 失败一律回退规则
-        logger.warning("LLM 调用失败，回退规则兜底: %s", exc)
-        return None
+    return client.chat_json(system_prompt, user_prompt,
+                            response_model=response_model)
 
 
 __all__ = ["OpenAICompatibleClient", "get_client", "chat_json",
