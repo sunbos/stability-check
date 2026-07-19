@@ -87,9 +87,9 @@ class ScenarioWorker(WorkerAgent):
         """从 adapter 获取底层 client（ScenarioISAPIAdapter._client）。
 
         ScenarioISAPIAdapter 是薄壳，核心逻辑在 HikvisionClient；capabilities 直接
-        操作 client 避免多一层转发。
+        操作 client 避免多一层转发。基类 WorkerAgent 存储为 self.adapter（无下划线）。
         """
-        return getattr(self._adapter, "_client", None)
+        return getattr(self.adapter, "_client", None)
 
     # ---- 主流水线（保持原 act 流水线，内部切换到 capabilities） ----------
     async def act(self, tick: dict) -> None:
@@ -208,16 +208,25 @@ class ScenarioWorker(WorkerAgent):
         - 任一 fact key 以 _na 结尾且为 True → 标记本轮 NA
         - 任一 fact key 以 _soft 结尾 → 软事实（不强制 fail，Advisor 加风险分）
         - 其余 fact 任一为 False → probe_ok=False（事实独裁 fail）
+
+        snapshot 构造：把 _last_snapshot（AcsWorkStatus dict）与 ctx 的 events/
+        baseline/last_open_iso 合并成 rich snapshot，让 FieldProbe/OnlineProbe/
+        CountProbe（用 resolve_field 解析字段路径）和 EventChainProbe（取 events
+        键）都能从同一个 dict 取数据。
         """
         self._na = False
         facts: dict = {}
         soft_facts: dict = {}
-        # snapshot 选择：若 ctx 有 events 属性（EventChainProbe 需要），传 ctx；
-        # 否则传 _last_snapshot（FieldProbe/OnlineProbe/CountProbe 用）
-        snapshot = self._ctx if self._ctx is not None else self._last_snapshot
+        # 构造 rich snapshot：dict 字段供 FieldProbe/CountProbe，events 供 EventChainProbe
+        rich: dict = dict(self._last_snapshot) if isinstance(
+            self._last_snapshot, dict) else {}
+        if self._ctx is not None:
+            rich["events"] = self._ctx.events
+            rich["baseline"] = self._ctx.baseline
+            rich["last_open_iso"] = self._ctx.last_open_iso
         for probe in self._probes:
             try:
-                fact = probe.check(snapshot)
+                fact = probe.check(rich)
             except Exception as exc:  # noqa: BLE001
                 self._mark("probe_error", reason=str(exc))
                 fact = {"probe_ok": False}

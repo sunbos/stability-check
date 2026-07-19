@@ -23,6 +23,15 @@ target:
 stress:
   type: reboot            # 每轮重启一次主设备
   reboot_after: true     # 重启会让设备掉线，等待其重新上线
+  # 实测设备重启恢复时序（2026-07-20 真机观测，scripts/_debug_reboot_full.py）：
+  #   t=0-4s   HTTP 200（设备在线）
+  #   t=4-6s   HTTP 401（HTTP 服务仍在响应，Digest Auth nonce 开始失效）
+  #   t=6-43s  Transport error（设备完全掉线，HTTP 服务不可达）
+  #   t=43s+   HTTP 401（HTTP 服务恢复，但旧 DigestAuth 实例的 nonce 失效）
+  # client.py 的 _request 在 401 时会重置 DigestAuth 实例并重试，新实例从空
+  # 状态重新协商 challenge 立即 200。因此 wait_online 只需等设备 HTTP 服务
+  # 恢复（~43s），无需等设备端 Digest Auth 认证服务完全就绪（~420s+）。
+  # 180s 覆盖设备掉线 ~37s + HTTP 服务恢复 + 重置 auth 重试 + buffer。
   wait_online_timeout: 180
 
 probe:

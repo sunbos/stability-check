@@ -60,6 +60,8 @@ class HikvisionClient:
             base_url=base_url,
             timeout=httpx.Timeout(effective_timeout),
         )
+        self._username = username
+        self._password = password
         self._auth = httpx.DigestAuth(username, password)
         self._timeout = effective_timeout
         self._base = base_url
@@ -84,6 +86,12 @@ class HikvisionClient:
         按指数退避重试 ``retries`` 次（默认 2，即最多 3 次尝试），缓解真实设备
         瞬时抖动（首次运行偶发的 ``timed out``）；HTTP 状态错误
         （4xx/5xx）属于确定性失败，**不**重试，直接抛 RuntimeError 带响应体。
+
+        ``HTTP 401`` 特殊处理：``httpx.DigestAuth`` 实例缓存了上次协商的
+        ``_last_challenge``（含 nonce），设备 reboot 后旧 nonce 失效，但
+        ``DigestAuth.auth_flow`` 未能自动重协商（实测 720s+ 持续 401，详见
+        2026-07-20 真机回归记录）。此处检测到 401 时**重置 DigestAuth 实例**
+        并立即重试一次，让新实例从空状态重新协商 challenge。
         """
         url = self._url(path)
         req_headers = dict(headers or {})
@@ -98,7 +106,9 @@ class HikvisionClient:
                 content = body
 
         last_exc: Exception | None = None
-        for attempt in range(retries + 1):
+        auth_retried = False  # 401 重置 auth 仅重试一次，避免死循环
+        attempt = 0
+        while True:
             with self._lock:
                 try:
                     resp = self._client.request(
@@ -113,8 +123,17 @@ class HikvisionClient:
                     if attempt < retries:
                         # 指数退避：0.5s、1.0s（封顶 3.0s），避免打爆设备。
                         time.sleep(min(0.5 * (2 ** attempt), 3.0))
+                        attempt += 1
                         continue
                     raise RuntimeError(f"Transport error on {method} {url}: {e}") from e
+                # 401 特殊处理：重置 DigestAuth 实例并重试一次。
+                # 设备 reboot 后旧 nonce 失效，新 DigestAuth 实例能从空状态
+                # 重新协商 challenge（实测：旧实例持续 401，新实例立即 200）。
+                # 不消耗 retries 预算（retries 仅用于 TransportError）。
+                if resp.status_code == 401 and not auth_retried:
+                    auth_retried = True
+                    self._auth = httpx.DigestAuth(self._username, self._password)
+                    continue
                 # httpx 默认对 4xx/5xx 不抛异常（需显式 raise_for_status），
                 # 这里手动检查并抛 RuntimeError 带响应体，保持与原 urllib 行为一致。
                 if resp.status_code >= 400:

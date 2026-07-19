@@ -97,7 +97,12 @@ class ScenarioLiveReporter(ObserverAgent):
 def _recover_timeout_for(scenario: Scenario) -> float:
     st = scenario.stress
     if st.type in ("reboot", "upgrade") and st.reboot_after:
-        return st.wait_online_timeout + 30.0
+        # wait_online 含设备掉线 + HTTP 恢复 + 401 重置 DigestAuth 重试。
+        # client.py _request 在 401 时重置 DigestAuth 实例并立即重试，新实例
+        # 从空状态重新协商 challenge（~1 次额外往返），所以 wait_online 实际
+        # 在设备 HTTP 服务恢复（~43s）后立即返回 True，无需等设备端 Digest Auth
+        # 认证服务完全就绪（~420s+）。+60s buffer 覆盖 probe_interval + 边界抖动。
+        return st.wait_online_timeout + 60.0
     return 10.0
 
 

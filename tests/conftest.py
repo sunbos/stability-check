@@ -21,6 +21,14 @@ from pathlib import Path
 import pytest
 import yaml
 
+# 加载项目根的 .env（如果存在），让 pytest 能读到 HIK_HOST / LLM_API_KEY 等
+# 真实环境变量。缺失不报错（CI 环境可能无 .env，走 skip 路径）。
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+except ImportError:
+    pass  # python-dotenv 未安装时跳过，依赖系统环境变量
+
 # configs/ 目录（项目根/configs，conftest.py 在 tests/ 下，parent.parent 即项目根）
 _CONFIGS_DIR = Path(__file__).parent.parent / "configs"
 
