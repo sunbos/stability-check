@@ -9,11 +9,12 @@ from .actions.base import ActionBase, ActionResult
 from .actions.sleep import SleepAction
 from .actions.noop import NoopAction
 from .probes.base import ProbeBase
+from .probes.field import FieldProbe
 from .preconditions.base import PreconditionBase
 
 __all__ = [
     "ActionBase", "ActionResult", "ProbeBase", "PreconditionBase",
-    "SleepAction", "NoopAction",
+    "SleepAction", "NoopAction", "FieldProbe",
     "create_action", "create_probe", "create_precondition",
 ]
 
@@ -21,6 +22,11 @@ __all__ = [
 _ACTION_REGISTRY = {
     "sleep": SleepAction,
     "noop": NoopAction,
+}
+
+# Probe 类型注册表:type -> class
+_PROBE_REGISTRY = {
+    "field": FieldProbe,
 }
 
 
@@ -43,8 +49,21 @@ def create_action(spec: Any) -> ActionBase:
 
 
 def create_probe(spec: Any) -> ProbeBase:
-    """根据 ProbeSpec 创建 Probe 实例(暂未实现,Task 4a.3 起逐步填充)。"""
-    raise NotImplementedError(f"Probe type {getattr(spec, 'type', '?')} 暂未实现")
+    """根据 ProbeSpec.type 路由到具体 Probe 实现。
+
+    Args:
+        spec: ProbeSpec 实例(含 .type 和 .params)
+
+    Returns:
+        ProbeBase 实现实例
+
+    Raises:
+        NotImplementedError: 未注册的 type
+    """
+    cls = _PROBE_REGISTRY.get(spec.type)
+    if cls is None:
+        raise NotImplementedError(f"Probe type {spec.type} 暂未实现")
+    return cls(**(spec.params or {}))
 
 
 def create_precondition(spec: Any) -> PreconditionBase:
