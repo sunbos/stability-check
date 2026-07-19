@@ -8,13 +8,14 @@ from typing import Any
 from .actions.base import ActionBase, ActionResult
 from .actions.sleep import SleepAction
 from .actions.noop import NoopAction
+from .actions.reboot import RebootAction
 from .probes.base import ProbeBase
 from .probes.field import FieldProbe
 from .preconditions.base import PreconditionBase
 
 __all__ = [
     "ActionBase", "ActionResult", "ProbeBase", "PreconditionBase",
-    "SleepAction", "NoopAction", "FieldProbe",
+    "SleepAction", "NoopAction", "RebootAction", "FieldProbe",
     "create_action", "create_probe", "create_precondition",
 ]
 
@@ -22,6 +23,7 @@ __all__ = [
 _ACTION_REGISTRY = {
     "sleep": SleepAction,
     "noop": NoopAction,
+    "reboot": RebootAction,
 }
 
 # Probe 类型注册表:type -> class

@@ -369,6 +369,41 @@ class HikvisionClient:
             raise RuntimeError(f"get_work_status returned {status}")
         return json.loads(body.decode("utf-8"))
 
+    def wait_online(self, timeout: float = 180.0,
+                    probe_endpoint: str = "/ISAPI/System/deviceInfo",
+                    probe_interval: float = 2.0) -> bool:
+        """轮询 probe_endpoint 直到设备恢复在线(2 阶段:先看到失败,再看到成功)。
+
+        用于 reboot / upgrade 等需要等待设备重启恢复的场景。阶段 1 等待首次失败
+        (设备开始重启,HTTP 暂不可达);阶段 2 等待首次成功(设备 HTTP 恢复)。
+        与 worker.py 的 3 阶段 _wait_online 相比,这里不要求连续 N 次成功确认,
+        适合 RebootAction 的简化场景;worker.py 的 3 阶段探测将在 PR4c 删除。
+
+        Args:
+            timeout: 总超时秒数(默认 180s)
+            probe_endpoint: 探测端点(默认 /ISAPI/System/deviceInfo)
+            probe_interval: 轮询间隔秒数(默认 2.0s)
+
+        Returns:
+            True 设备恢复在线;False 超时未恢复
+        """
+        deadline = time.monotonic() + max(timeout, 1.0)
+        offline_seen = False
+        while time.monotonic() < deadline:
+            try:
+                self._request("GET", probe_endpoint)
+                if offline_seen:
+                    return True
+            except Exception:  # noqa: BLE001
+                offline_seen = True
+            time.sleep(probe_interval)
+        # 超时后再做一次最终探测,处理阶段 2 刚好在 deadline 边界成功的场景
+        try:
+            self._request("GET", probe_endpoint)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
     def query_events(self, major: int, minor: int,
                      start: str, end: str) -> List[Dict[str, Any]]:
         """POST /ISAPI/AccessControl/AcsEvent?format=json -> InfoList。"""
