@@ -4,9 +4,8 @@
 不新增跨引擎耦合：本模块属于 business（领域）层，负责把领域数据
 （Scenario）+ 领域适配器（ScenarioISAPIAdapter）接线进 ControlLoop。
 
-运行模式：
-  - 真实运行：传入真实 HikvisionClient（自动用 target 连接信息构造）。
-  - dry_run  ：使用 FakeScenarioAdapter，无需真实设备，用于演示 / 自测。
+运行模式：传入真实 HikvisionClient（自动用 target 连接信息构造），或显式传入
+TargetAdapter（测试可脚本化探测结果）。
 
 返回一份结构化汇总（轮数、裁决分布、NA 计数、中止原因、遥测），便于上层
 生成报告或接治理面板。
@@ -33,7 +32,7 @@ from ...multi_agent.observers.base import ObserverAgent
 from ...multi_agent.observers.scribe import ScribeAgent
 from ...multi_agent.adapter import TargetAdapter
 from .client import HikvisionClient
-from .scenario_adapter import FakeScenarioAdapter, ScenarioISAPIAdapter
+from .scenario_adapter import ScenarioISAPIAdapter
 from .scenario_schema import Scenario
 from .scenario_worker import ScenarioWorker
 
@@ -105,7 +104,6 @@ def _recover_timeout_for(scenario: Scenario) -> float:
 async def run_scenario(
     scenario: Scenario,
     *,
-    dry_run: bool = False,
     run_timeout: Optional[float] = None,
     client: Optional[HikvisionClient] = None,
     adapter: Optional[TargetAdapter] = None,
@@ -116,9 +114,8 @@ async def run_scenario(
 ) -> Dict[str, Any]:
     """端到端运行一份场景，返回汇总字典。
 
-    ``adapter`` 显式传入时直接使用（测试可脚本化探测结果）；否则 ``dry_run=True``
-    使用 FakeScenarioAdapter（不连设备）；否则按 scenario.target 自动构造
-    HikvisionClient + ScenarioISAPIAdapter。
+    ``adapter`` 显式传入时直接使用（测试可脚本化探测结果）；否则按 scenario.target
+    自动构造 HikvisionClient + ScenarioISAPIAdapter（连接真实设备）。
 
     ``live=True`` 时挂载 ``ScenarioLiveReporter``，每轮裁决出来即打印一行（实时
     流式），便于长时间真实设备回归时边跑边看；库默认 ``False``（避免测试污染输出）。
@@ -159,8 +156,6 @@ async def run_scenario(
 
     if adapter is not None:
         used_adapter = adapter
-    elif dry_run:
-        used_adapter = FakeScenarioAdapter(scenario)
     else:
         if client is None:
             t = scenario.target
@@ -240,11 +235,8 @@ async def run_scenario(
         "worker": worker,
         "telemetry": tel,
         "config": cfg,
+        "client": client,
     }
-    if not dry_run:
-        result["client"] = client
-    else:
-        result["adapter"] = used_adapter
     return result
 
 

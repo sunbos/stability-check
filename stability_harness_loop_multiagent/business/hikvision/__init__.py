@@ -5,7 +5,7 @@ from .scenario_schema import (
     from_dict,
     from_yaml,
 )
-from .scenario_adapter import FakeScenarioAdapter, ScenarioISAPIAdapter
+from .scenario_adapter import ScenarioISAPIAdapter
 from .scenario_worker import ScenarioWorker
 from .scenario_runner import run_scenario
 from .adapter import HikvisionAdapter, HikvisionAdapterFactory, normalize_device_config
@@ -15,7 +15,6 @@ __all__ = [
     "from_dict",
     "from_yaml",
     "ScenarioISAPIAdapter",
-    "FakeScenarioAdapter",
     "ScenarioWorker",
     "run_scenario",
     "HikvisionAdapter",

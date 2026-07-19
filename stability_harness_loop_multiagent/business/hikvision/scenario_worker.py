@@ -87,8 +87,7 @@ class ScenarioWorker(WorkerAgent):
         """从 adapter 获取底层 client（ScenarioISAPIAdapter._client）。
 
         ScenarioISAPIAdapter 是薄壳，核心逻辑在 HikvisionClient；capabilities 直接
-        操作 client 避免多一层转发。FakeScenarioAdapter 没有 _client，返回 None
-        （PR4c 删除 FakeScenarioAdapter 后此 fallback 可清理）。
+        操作 client 避免多一层转发。
         """
         return getattr(self._adapter, "_client", None)
 
@@ -186,8 +185,8 @@ class ScenarioWorker(WorkerAgent):
     def _fetch_snapshot(self) -> dict:
         """从设备拉取 snapshot（用 client.get_work_status）。
 
-        若 client 不可用（FakeScenarioAdapter 无 _client）或调用失败，返回空 dict
-        （字段缺失 → 断言失败，符合"设备不可达即失败"语义）。
+        若 client 不可用或调用失败，返回空 dict（字段缺失 → 断言失败，符合
+        "设备不可达即失败"语义）。
         """
         client = getattr(self._ctx, "client", None) if self._ctx else None
         if client is None:

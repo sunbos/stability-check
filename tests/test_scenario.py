@@ -1,35 +1,17 @@
-"""场景化稳定性层的测试（纯合成适配器，不连真实设备）。
+"""场景化稳定性层的纯逻辑测试（schema 校验 / 字段解析 / 断言比较）。
 
-覆盖：schema 校验 / 字段解析 / 断言比较 / 事实独裁裁决 / NA 不失败 /
-截止时间早停 / 重启失败导致离线即失败。全部沿用框架测试不变量
-（MemorySink 断言、合成适配器、极短超时）。
+端到端用例（事实独裁裁决 / NA 不失败 / 截止时间早停 / 重启失败导致离线即失败）
+需要真实设备，走真机集成路径，不在此文件覆盖。
 """
-
-import os
 
 import pytest
 
-from stability_harness_loop_multiagent.business.hikvision.scenario_adapter import (
-    FakeScenarioAdapter,
-)
-from stability_harness_loop_multiagent.business.hikvision.scenario_runner import (
-    run_scenario,
-)
 from stability_harness_loop_multiagent.business.hikvision.scenario_schema import (
     Scenario,
     compare_probe,
     from_dict,
     from_yaml,
     resolve_field,
-)
-
-# 真机集成测试标记：无 HIK_HOST 环境变量时跳过。
-# PR4b 把 ScenarioWorker 切换为 capabilities 组合器（通过 ctx.client 调用），
-# FakeScenarioAdapter 无 _client，因此这 6 个原 fake-based 端到端测试在 PR4b 阶段
-# 被跳过；PR4c 会完全删除 FakeScenarioAdapter 及这些测试，由真机用例接替。
-real_device_only = pytest.mark.skipif(
-    not os.environ.get("HIK_HOST"),
-    reason="requires real Hikvision device (HIK_HOST env var)",
 )
 
 
@@ -117,98 +99,3 @@ def test_compare_probe_equals_in_coerce():
         expect_in = ["online", "connect"]
     assert compare_probe("connect", _P2()) is True
     assert compare_probe("offline", _P2()) is False
-
-
-# ---- 端到端（合成适配器） -----------------------------------------------
-@real_device_only
-@pytest.mark.asyncio
-async def test_scenario_reboot_all_pass():
-    sc = from_dict(_base_dict(stress={"type": "reboot", "reboot_after": True}))
-    adapter = FakeScenarioAdapter(sc)  # 默认在线快照 -> 全部通过
-    res = await run_scenario(sc, adapter=adapter, run_timeout=30)
-    s = res["summary"]
-    assert s["rounds"] == 3
-    assert s["pass"] == 3
-    assert s["fail"] == 0
-    assert s["na"] == 0
-    assert s["stop_reason"] is None   # 正常完成（未因 NA/截止早停）
-    assert adapter.stress_calls == 3
-
-
-@real_device_only
-@pytest.mark.asyncio
-async def test_scenario_probe_mismatch_fails():
-    sc = from_dict(_base_dict())
-    probe_values = [{"AcsWorkStatus": {"doorOnlineStatus": [2]}}]  # 离线 != 1
-    adapter = FakeScenarioAdapter(sc, probe_values=probe_values)
-    res = await run_scenario(sc, adapter=adapter, run_timeout=30)
-    s = res["summary"]
-    assert s["fail"] == 3            # 事实独裁：断言失败 -> fail 裁决
-    assert s["pass"] == 0
-    assert s["verdicts"].get("fail", 0) == 3
-
-
-@real_device_only
-@pytest.mark.asyncio
-async def test_scenario_na_not_fail_and_stop_on_na():
-    sc = from_dict(_base_dict(
-        probe={"endpoint": "/x", "field": "AcsWorkStatus.doorOnlineStatus[0]",
-               "expect_equals": 1,
-               "na_if_absent": "AcsWorkStatus.doorOnlineStatus"},
-        loop={"max_rounds": 100, "interval_seconds": 0, "stop_on_na": True},
-    ))
-    # 空快照 -> 存在性字段缺失 -> NA
-    adapter = FakeScenarioAdapter(sc, probe_values=[{}])
-    res = await run_scenario(sc, adapter=adapter, run_timeout=30)
-    s = res["summary"]
-    assert s["na"] == 1
-    assert s["fail"] == 0
-    assert s["aborted"] is True
-    assert "NA" in (s["abort_reason"] or "")
-
-
-@real_device_only
-@pytest.mark.asyncio
-async def test_scenario_na_continues_when_stop_on_na_false():
-    sc = from_dict(_base_dict(
-        stress={"type": "none"},
-        probe={"endpoint": "/x", "field": "AcsWorkStatus.doorOnlineStatus[0]",
-               "expect_equals": 1,
-               "na_if_absent": "AcsWorkStatus.doorOnlineStatus"},
-        loop={"max_rounds": 3, "interval_seconds": 0, "stop_on_na": False},
-    ))
-    adapter = FakeScenarioAdapter(sc, probe_values=[{}, {}, {}])
-    res = await run_scenario(sc, adapter=adapter, run_timeout=30)
-    s = res["summary"]
-    assert s["na"] == 3
-    assert s["fail"] == 0
-    assert s["stop_reason"] is None   # NA 但未要求早停 -> 正常跑完
-
-
-@real_device_only
-@pytest.mark.asyncio
-async def test_scenario_deadline_early_stop_nt():
-    sc = from_dict(_base_dict(loop={"max_rounds": 100, "interval_seconds": 0,
-                                    "deadline": "00:00"}))  # 必已过去
-    adapter = FakeScenarioAdapter(sc)
-    res = await run_scenario(sc, adapter=adapter, run_timeout=30)
-    s = res["summary"]
-    assert s["aborted"] is True
-    assert "deadline" in (s["abort_reason"] or "")
-    # 截止时间早停在施加压力前，不应有任何 stress / observe 调用。
-    assert adapter.stress_calls == 0
-
-
-@real_device_only
-@pytest.mark.asyncio
-async def test_scenario_reboot_failure_offline_fails():
-    sc = from_dict(_base_dict(
-        stress={"type": "reboot", "reboot_after": True},
-        loop={"max_rounds": 1, "interval_seconds": 0, "stop_on_na": False},
-    ))
-    # 重启失败 + 探测为空（设备离线）-> 字段缺失 -> 断言失败 -> fail
-    adapter = FakeScenarioAdapter(sc, probe_values=[{}], fail_stress=True)
-    res = await run_scenario(sc, adapter=adapter, run_timeout=30)
-    s = res["summary"]
-    assert s["stress_fail"] == 1
-    assert s["fail"] == 1

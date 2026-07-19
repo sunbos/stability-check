@@ -28,29 +28,3 @@ def test_client_random_search_id_is_unique():
     assert len(a) == 32 and len(b) == 32
     assert a != b  # Hikvision requires unique searchID per session
 
-
-# --- FakeHikvisionClient tests (Task 4) ---
-from tests.fakes.fake_hikvision import FakeHikvisionClient
-
-
-def test_fake_client_records_remote_open_and_returns_events():
-    fake = FakeHikvisionClient()
-    fake.remote_open_door(door_no=1)
-    # Query remote-open event (major=3, minor=1024)
-    evs = fake.query_events(3, 1024, fake._win_start, fake._win_end)
-    assert len(evs) == 1
-    assert evs[0]["major"] == 3 and evs[0]["minor"] == 1024
-    # Query lock-open event (major=5, minor=21)
-    opens = fake.query_events(5, 21, fake._win_start, fake._win_end)
-    assert len(opens) == 1
-    # Query lock-close event (major=5, minor=22)
-    closes = fake.query_events(5, 22, fake._win_start, fake._win_end)
-    assert len(closes) == 1
-
-
-def test_fake_client_time_skew():
-    fake = FakeHikvisionClient(time_skew_seconds=10.0)
-    t = fake.get_time()
-    # Device time differs from host by skew
-    assert "localTime" in t["Time"]
-
