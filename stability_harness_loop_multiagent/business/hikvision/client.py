@@ -1,9 +1,14 @@
-"""海康 ISAPI HTTP 同步客户端，使用 Digest 鉴权（仅依赖标准库）。
+"""海康 ISAPI HTTP 同步客户端，使用 Digest 鉴权（httpx + httpx.DigestAuth）。
 
 采用同步方式，因为 TargetAdapter 协议本身是同步的；Worker 通过
-asyncio.to_thread 包裹调用以实现并行。底层使用 urllib.request +
-HTTPDigestAuthHandler（无第三方依赖），对应主干分支的
-tests/agents/device_client.py。
+asyncio.to_thread 包裹调用以实现并行。底层使用 httpx.Client +
+httpx.DigestAuth 替换原手写 urllib + HTTPDigestAuthHandler，
+对应主干分支的 tests/agents/device_client.py。
+
+注：原计划用 httpx_auth.DigestAuth，但 httpx_auth 0.23.x 不提供 Digest
+（仅 Basic / API key / OAuth2 / AWS4 等）。httpx 自带 ``httpx.DigestAuth``，
+是官方推荐的 Digest 鉴权实现，故改用之。属于 httpx 生态，仍满足
+"用 httpx 生态替换手写 urllib" 的目标。
 """
 
 import json
@@ -12,10 +17,10 @@ import secrets
 import string
 import threading
 import time
-import urllib.error
-import urllib.request
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Tuple
+
+import httpx
 
 # 海康 RemoteControl/door 接口要求 XML 报文（在该固件上 JSON 变体会
 # 返回 "notSupport"）。xmlns 命名空间是必填项。
@@ -38,82 +43,91 @@ def _strip_microseconds(ts: str) -> str:
 
 
 class HikvisionClient:
-    """使用标准库 urllib + Digest 鉴权的同步 ISAPI 客户端。"""
+    """使用 httpx + httpx.DigestAuth 的同步 ISAPI 客户端。"""
 
     def __init__(self, host: str, port: int = 80, username: str = "admin",
-                 password: str = "", http_timeout: float = 5.0) -> None:
+                 password: str = "", http_timeout: float = 5.0,
+                 timeout: float | None = None) -> None:
+        # 兼容两种关键字：原版用 ``http_timeout``，TDD 测试用 ``timeout``。
+        # 若显式传入 ``timeout`` 则优先使用，否则回退到 ``http_timeout``。
+        effective_timeout = timeout if timeout is not None else http_timeout
         host = host.rstrip("/")
         if not host.startswith("http://") and not host.startswith("https://"):
             host = "http://" + host
-        self._base = f"{host}:{port}"
+        base_url = f"{host}:{port}"
+
+        self._client = httpx.Client(
+            base_url=base_url,
+            timeout=httpx.Timeout(effective_timeout),
+        )
+        self._auth = httpx.DigestAuth(username, password)
+        self._timeout = effective_timeout
         self._user = username
         self._password = password
-        self._timeout = http_timeout
+        self._base = base_url
 
-        # Digest 鉴权：realm=None 让处理器匹配任意 realm。
-        pwd_mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
-        pwd_mgr.add_password(None, self._base, self._user, self._password)
-        auth_handler = urllib.request.HTTPDigestAuthHandler(pwd_mgr)
-        self._opener = urllib.request.build_opener(auth_handler)
-        # HTTPDigestAuthHandler 缓存的 nonce/nc 状态并非线程安全。
+        # httpx.DigestAuth 在多线程并发请求时会共享 nonce/nc 状态，
         # Worker 通过 asyncio.to_thread 并行调用 query_events；若无锁保护，
         # 并发请求会破坏鉴权状态（导致 HTTP 401）。
         self._lock = threading.Lock()
 
     def _url(self, path: str) -> str:
+        """拼接完整 URL（仅用于错误信息可读性，httpx 调用本身用 base_url + path）。"""
         return self._base + path
 
     def _request(self, method: str, path: str, body: Any = None,
                  headers: Dict[str, str] = None, retries: int = 2) -> Tuple[int, bytes]:
         """发送请求，返回 (状态码, 响应字节)。出错时抛出异常。
 
-        通过 self._lock 串行化，因为 HTTPDigestAuthHandler 的 nonce/nc
+        通过 self._lock 串行化，因为 httpx.DigestAuth 的 nonce/nc
         状态并非线程安全（并发调用会导致 HTTP 401）。
 
-        网络层错误（``urllib.error.URLError``，含连接超时 / 拒绝 / 握手失败）
+        网络层错误（``httpx.TransportError``，含连接超时 / 拒绝 / 握手失败）
         按指数退避重试 ``retries`` 次（默认 2，即最多 3 次尝试），缓解真实设备
-        瞬时抖动（首次运行偶发的 ``timed out``）；HTTP 状态错误（``HTTPError``，
-        4xx/5xx）属于确定性失败，**不**重试。
+        瞬时抖动（首次运行偶发的 ``timed out``）；HTTP 状态错误
+        （4xx/5xx）属于确定性失败，**不**重试，直接抛 RuntimeError 带响应体。
         """
         url = self._url(path)
         req_headers = dict(headers or {})
-        data: bytes | None = None
+        content: bytes | None = None
         if body is not None:
             if isinstance(body, (dict, list)):
-                data = json.dumps(body).encode("utf-8")
+                content = json.dumps(body).encode("utf-8")
                 req_headers.setdefault("Content-Type", "application/json")
             elif isinstance(body, str):
-                data = body.encode("utf-8")
+                content = body.encode("utf-8")
             else:
-                data = body
+                content = body
+
         last_exc: Exception | None = None
         for attempt in range(retries + 1):
-            req = urllib.request.Request(url, data=data, method=method)
-            for k, v in req_headers.items():
-                req.add_header(k, v)
             with self._lock:
                 try:
-                    resp = self._opener.open(req, timeout=self._timeout)
-                    return resp.getcode(), resp.read()
-                except urllib.error.HTTPError as e:
-                    # 确定性失败（4xx/5xx）：不重试，直接抛 RuntimeError 带响应体。
-                    try:
-                        body_bytes = e.read()
-                    except Exception:  # noqa: BLE001
-                        body_bytes = b""
-                    raise RuntimeError(
-                        f"HTTP {e.code} on {method} {url}: "
-                        f"{body_bytes.decode('utf-8', 'replace')}"
-                    ) from e
-                except urllib.error.URLError as e:
+                    resp = self._client.request(
+                        method, path,
+                        content=content,
+                        headers=req_headers,
+                        auth=self._auth,
+                    )
+                except httpx.TransportError as e:
+                    # 网络层错误（连接超时/拒绝/握手失败）：重试。
                     last_exc = e
                     if attempt < retries:
                         # 指数退避：0.5s、1.0s（封顶 3.0s），避免打爆设备。
                         time.sleep(min(0.5 * (2 ** attempt), 3.0))
                         continue
-                    raise RuntimeError(f"URL error on {method} {url}: {e.reason}") from e
+                    raise RuntimeError(f"Transport error on {method} {url}: {e}") from e
+                # httpx 默认对 4xx/5xx 不抛异常（需显式 raise_for_status），
+                # 这里手动检查并抛 RuntimeError 带响应体，保持与原 urllib 行为一致。
+                if resp.status_code >= 400:
+                    body_bytes = resp.content or b""
+                    raise RuntimeError(
+                        f"HTTP {resp.status_code} on {method} {url}: "
+                        f"{body_bytes.decode('utf-8', 'replace')}"
+                    )
+                return resp.status_code, resp.content
         # 兜底（retries>=0 时循环内必已 raise；此处理论上不可达）。
-        raise RuntimeError(f"URL error on {method} {url}: {last_exc}") from last_exc
+        raise RuntimeError(f"Transport error on {method} {url}: {last_exc}") from last_exc
 
     def request_json(self, method: str, path: str, body: Any = None,
                       headers: Dict[str, str] = None) -> Any:
