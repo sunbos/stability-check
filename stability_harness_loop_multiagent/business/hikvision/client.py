@@ -62,8 +62,6 @@ class HikvisionClient:
         )
         self._auth = httpx.DigestAuth(username, password)
         self._timeout = effective_timeout
-        self._user = username
-        self._password = password
         self._base = base_url
 
         # httpx.DigestAuth 在多线程并发请求时会共享 nonce/nc 状态，
@@ -428,6 +426,16 @@ class HikvisionClient:
         if status != 200:
             raise RuntimeError(f"set_door_open_duration returned {status}")
         return self._parse_status_xml(body)
+
+    def close(self) -> None:
+        """关闭底层 httpx.Client 连接池(长生命周期客户端用完应显式释放)。"""
+        self._client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
 
 __all__ = ["HikvisionClient"]

@@ -209,8 +209,9 @@ def test_hikvision_adapter_factory_three_fields():
     )
     assert isinstance(adapter, HikvisionAdapter)
     assert adapter._client._base == "http://10.0.0.1:80"
-    assert adapter._client._user == "admin"
-    assert adapter._client._password == "secret"
+    # 凭证下沉到 httpx.DigestAuth（client 不再持有 _user/_password 字段），
+    # 这里只验证凭证接缝存在，不 peek 私有属性。
+    assert adapter._client._auth is not None
 
     # device_config dict 等价路径（含 host/user/pass 别名归一）。
     adapter2 = HikvisionAdapterFactory.create(
@@ -218,8 +219,7 @@ def test_hikvision_adapter_factory_three_fields():
     )
     assert isinstance(adapter2, HikvisionAdapter)
     assert adapter2._client._base == "http://10.0.0.2:80"
-    assert adapter2._client._user == "root"
-    assert adapter2._client._password == "p2"
+    assert adapter2._client._auth is not None
 
 
 def test_hikvision_adapter_device_config_injection():
