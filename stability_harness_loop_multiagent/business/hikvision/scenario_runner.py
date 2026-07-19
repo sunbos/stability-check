@@ -188,6 +188,26 @@ async def run_scenario(
 
     for a in agents:
         await a.start()
+    # 循环前执行 preconditions（DeviceOnline/SerialMode/BaselineRecord）
+    if hasattr(worker, "pre_loop_setup"):
+        if not worker.pre_loop_setup():
+            reason = "pre_loop_setup failed"
+            for a in agents:
+                await a.stop()
+            return {
+                "summary": {
+                    "scenario_id": scenario.id,
+                    "scenario_name": scenario.name,
+                    "rounds": 0,
+                    "verdicts": {},
+                    "pass": 0, "fail": 0, "na": 0, "stress_fail": 0,
+                    "aborted": True,
+                    "abort_reason": reason,
+                    "stop_reason": reason,
+                },
+                "ctx": ctx, "loop": loop, "worker": worker,
+                "telemetry": tel, "config": cfg,
+            }
     await loop.start()
     try:
         await asyncio.wait_for(loop._task, run_timeout)
