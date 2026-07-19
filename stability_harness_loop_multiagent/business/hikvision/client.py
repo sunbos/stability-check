@@ -416,6 +416,62 @@ class HikvisionClient:
         info_list = data.get("AcsEvent", {}).get("InfoList")
         return info_list or []
 
+    def query_event_chain(self, open_iso: str,
+                          backward_buffer: float = 30.0,
+                          baseline_serials: dict[str, int] | None = None
+                          ) -> dict[str, list[Dict[str, Any]]]:
+        """查询 3 事件链(remote_open + lock_open + lock_close)。
+
+        用设备时间作为终点,open_iso - backward_buffer 作为起点,分别查询 3 个事件码,
+        再用 baseline_serials 过滤掉基线之前的事件。对应 worker.py 的
+        _query_events_pre_reboot 逻辑(行 809-860)。
+
+        Args:
+            open_iso: 开门时刻的设备时间(ISO 8601,锚点)
+            backward_buffer: 向前回溯秒数(默认 30s,覆盖 remote_open_door 触发到事件落盘的延迟)
+            baseline_serials: 各事件类型的基线 serialNo,如 {"trigger": 100, "opened": 95, "closed": 90}
+                缺省或某键缺失则不过滤该类型
+
+        Returns:
+            {"trigger": [...], "opened": [...], "closed": [...]}
+            查询失败时返回 3 个空列表
+        """
+        from datetime import datetime, timedelta
+
+        from .event_codes import HikEventCode
+
+        # 起点 = open_iso - backward_buffer
+        try:
+            anchor = datetime.fromisoformat(open_iso)
+        except ValueError:
+            anchor = datetime.fromisoformat(open_iso.replace("Z", "+00:00"))
+        start_iso = (anchor - timedelta(seconds=backward_buffer)).isoformat()
+
+        # 终点 = 当前设备时间
+        try:
+            device_time = self.get_time()["Time"]["localTime"]
+        except Exception:  # noqa: BLE001
+            # 设备时间不可用时回退到 open_iso(已发生的事件仍可查到)
+            device_time = open_iso
+        end_iso = device_time
+
+        result: dict[str, list[Dict[str, Any]]] = {
+            "trigger": [], "opened": [], "closed": []}
+        try:
+            result["trigger"] = self.query_events(*HikEventCode.REMOTE_OPEN, start_iso, end_iso)
+            result["opened"] = self.query_events(*HikEventCode.LOCK_OPEN, start_iso, end_iso)
+            result["closed"] = self.query_events(*HikEventCode.LOCK_CLOSE, start_iso, end_iso)
+        except Exception:  # noqa: BLE001
+            return result  # 查询失败返回空列表
+
+        # 用 baseline_serials 过滤掉基线之前的事件
+        if baseline_serials:
+            for name in result:
+                base = baseline_serials.get(name, 0)
+                result[name] = [e for e in result[name]
+                                if int(e.get("serialNo", 0)) > base]
+        return result
+
     def get_door_param(self, door_no: int = 1) -> Dict[str, Any]:
         """GET /ISAPI/AccessControl/Door/param/<door_no>。
 

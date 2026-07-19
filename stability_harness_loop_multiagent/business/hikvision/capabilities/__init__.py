@@ -9,13 +9,18 @@ from .actions.base import ActionBase, ActionResult
 from .actions.sleep import SleepAction
 from .actions.noop import NoopAction
 from .actions.reboot import RebootAction
+from .actions.remote_open import RemoteOpenAction
+from .actions.query_events import QueryEventsAction
 from .probes.base import ProbeBase
 from .probes.field import FieldProbe
+from .probes.event_chain import EventChainProbe
 from .preconditions.base import PreconditionBase
 
 __all__ = [
     "ActionBase", "ActionResult", "ProbeBase", "PreconditionBase",
-    "SleepAction", "NoopAction", "RebootAction", "FieldProbe",
+    "SleepAction", "NoopAction", "RebootAction",
+    "RemoteOpenAction", "QueryEventsAction",
+    "FieldProbe", "EventChainProbe",
     "create_action", "create_probe", "create_precondition",
 ]
 
@@ -24,11 +29,14 @@ _ACTION_REGISTRY = {
     "sleep": SleepAction,
     "noop": NoopAction,
     "reboot": RebootAction,
+    "remote_open": RemoteOpenAction,
+    "query_events": QueryEventsAction,
 }
 
 # Probe 类型注册表:type -> class
 _PROBE_REGISTRY = {
     "field": FieldProbe,
+    "event_chain": EventChainProbe,
 }
 
 
