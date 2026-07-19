@@ -43,7 +43,7 @@ from stability_harness_loop_multiagent.business.hikvision.diagnostic import (
     DiagnosticKernel, HEAL_RETRIGGER, HEAL_TIME_SYNC,
 )
 from stability_harness_loop_multiagent.business.hikvision.llm import (
-    DEFAULT_MODEL, chat_json, get_client,
+    chat_json, get_client, get_model_name,
 )
 from stability_harness_loop_multiagent.business.hikvision.runner import (
     _default_llm_decide, _default_parse, _make_llm_decide, _patch_worker_plan_handler,
@@ -285,7 +285,13 @@ def _build_llm_verifier(use_llm: bool):
         _vlog.debug("LLM 计划校验原始返回: %s", res)
         if not isinstance(res, dict):
             return (True, "llm-no-json-allow")
-        # response_model=None 时 chat_json 返回 {"text": "..."}，需手动解析 JSON。
+        # chat_json(response_model=None) 能解析 JSON 时直接返回 dict,
+        # 否则返回 {"text": <原文>}。先看 res 自身是否含 allowed/allow 字段。
+        if "allowed" in res or "allow" in res:
+            if res.get("allowed") is False or res.get("allow") is False:
+                return (False, str(res.get("reason", "llm-rejected")))
+            return (True, "")
+        # 回退:尝试再解析 {"text": ...} 中的 JSON(双保险)。
         try:
             parsed = json.loads(res.get("text", ""))
         except (json.JSONDecodeError, TypeError):
@@ -823,7 +829,7 @@ async def _main() -> int:
             if llm is None:
                 _kv("LLM 状态", "未配置密钥 → 规则兜底（.env 设 LLM_API_KEY）")
             else:
-                _kv("LLM 状态", f"就绪（模型={DEFAULT_MODEL}）")
+                _kv("LLM 状态", f"就绪（模型={get_model_name()}）")
         _kv("大模型校验", "启用（计划经 LLM 护栏裁决）" if verifier is not None
             else "禁用（--no-verify 或未配置 LLM）")
         _kv("MVP 全量接入", "是（治理+多Advisor+通知+面板）" if args.all_agents

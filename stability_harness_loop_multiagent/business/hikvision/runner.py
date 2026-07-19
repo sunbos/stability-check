@@ -50,8 +50,9 @@ def _default_llm_decide(env: dict) -> str:
 def _make_llm_decide() -> Callable[[dict], str] | None:
     """若配置了 API 密钥，返回真实 LLM 决策可调用对象，否则返回 None。
 
-    使用模块级 ``chat_json``（``response_model=None`` → 返回 ``{"text": ...}``），
-    再手动解析 JSON 取 ``decision`` 字段。失败一律回退 ``HEAL_RETRIGGER``。
+    使用模块级 ``chat_json``（``response_model=None``）：能解析 JSON 时直接返回
+    dict，否则返回 ``{"text": ...}``。两种情况都尝试取 ``decision`` 字段，失败
+    一律回退 ``HEAL_RETRIGGER``。
     """
     client = get_client()
     if client is None:
@@ -67,6 +68,11 @@ def _make_llm_decide() -> Callable[[dict], str] | None:
         result = chat_json(client, system_prompt, json.dumps(env))
         if not isinstance(result, dict):
             return HEAL_RETRIGGER
+        # chat_json(response_model=None) 能解析 JSON 时直接返回 dict,
+        # 否则返回 {"text": <原文>}。先看 result 自身是否含 decision 字段。
+        if "decision" in result:
+            return result["decision"] or HEAL_RETRIGGER
+        # 回退:尝试再解析 {"text": ...} 中的 JSON(双保险)。
         try:
             parsed = json.loads(result.get("text", ""))
         except (json.JSONDecodeError, TypeError):
