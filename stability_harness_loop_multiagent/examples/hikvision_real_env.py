@@ -42,10 +42,11 @@ from stability_harness_loop_multiagent.business.hikvision.client import Hikvisio
 from stability_harness_loop_multiagent.business.hikvision.diagnostic import (
     DiagnosticKernel, HEAL_RETRIGGER, HEAL_TIME_SYNC,
 )
-from stability_harness_loop_multiagent.business.hikvision.llm import get_client
+from stability_harness_loop_multiagent.business.hikvision.llm import (
+    DEFAULT_MODEL, chat_json, get_client,
+)
 from stability_harness_loop_multiagent.business.hikvision.runner import (
-    _default_llm_decide, _default_parse, _make_llm_decide, _make_llm_parse,
-    _patch_worker_plan_handler,
+    _default_llm_decide, _default_parse, _make_llm_decide, _patch_worker_plan_handler,
 )
 from stability_harness_loop_multiagent.business.hikvision.worker import HikvisionWorker
 from stability_harness_loop_multiagent.core.agent import AgentSpec
@@ -276,18 +277,23 @@ def _build_llm_verifier(use_llm: bool):
     )
 
     def _llm_plan_guard(item):
-        try:
-            # 阻塞型 HTTP 调用；超时（20s）视作调用失败，按放行处理，不阻断压测。
-            res = client.chat_json(
-                system_prompt, json.dumps(item, ensure_ascii=False), timeout=20.0
-            )
-        except Exception:  # noqa: BLE001 - 校验调用失败按放行处理，不阻断压测
-            return (True, "llm-call-failed-allow")
+        # 模块级 chat_json 内部已捕获异常并返回 None；此处不再 try/except。
+        # 超时（20s）视作调用失败，按放行处理，不阻断压测。
+        res = chat_json(
+            client, system_prompt, json.dumps(item, ensure_ascii=False), timeout=20.0
+        )
         _vlog.debug("LLM 计划校验原始返回: %s", res)
         if not isinstance(res, dict):
             return (True, "llm-no-json-allow")
-        if res.get("allowed") is False or res.get("allow") is False:
-            return (False, str(res.get("reason", "llm-rejected")))
+        # response_model=None 时 chat_json 返回 {"text": "..."}，需手动解析 JSON。
+        try:
+            parsed = json.loads(res.get("text", ""))
+        except (json.JSONDecodeError, TypeError):
+            return (True, "llm-no-json-allow")
+        if not isinstance(parsed, dict):
+            return (True, "llm-no-json-allow")
+        if parsed.get("allowed") is False or parsed.get("allow") is False:
+            return (False, str(parsed.get("reason", "llm-rejected")))
         return (True, "")
     verifier.add_input_guardrail("llm_plan_safety", _llm_plan_guard)
     return verifier
@@ -472,8 +478,11 @@ async def _run_with_progress(
     等配置（spec §4.1、§4.2、§6）转发给 HikvisionWorker。同时会在 Loop 启动前
     运行 ``worker.pre_loop_setup()``，以便基准重启耗时只测量一次并在每轮复用。
     """
+    # use_llm=True: llm_parse 留 None，advisor 内部自取 LLM 客户端 + LLMPlan 解析
+    #   （无密钥则回退规则兜底）；diagnostic 用 _make_llm_decide() 探测 LLM。
+    # use_llm=False (--no-llm): 强制传 _default_parse，绕过 LLM 调用保证确定性。
     if use_llm:
-        llm_parse = _make_llm_parse() or _default_parse
+        llm_parse = None
         llm_decide = _make_llm_decide() or _default_llm_decide
     else:
         llm_parse = _default_parse
@@ -814,7 +823,7 @@ async def _main() -> int:
             if llm is None:
                 _kv("LLM 状态", "未配置密钥 → 规则兜底（.env 设 LLM_API_KEY）")
             else:
-                _kv("LLM 状态", f"就绪（模型={llm.model}）")
+                _kv("LLM 状态", f"就绪（模型={DEFAULT_MODEL}）")
         _kv("大模型校验", "启用（计划经 LLM 护栏裁决）" if verifier is not None
             else "禁用（--no-verify 或未配置 LLM）")
         _kv("MVP 全量接入", "是（治理+多Advisor+通知+面板）" if args.all_agents

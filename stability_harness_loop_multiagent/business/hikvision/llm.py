@@ -1,213 +1,80 @@
-"""兼容 OpenAI 的大模型客户端（openai SDK + OpenRouter）。
+"""LLM 客户端(openai SDK + OpenRouter)。
 
-用 openai SDK 替换手写 urllib，用 pydantic structured output 替换手写 JSON 抽取。
-默认使用 OpenRouter 免费模型 tencent/hy3:free。API 密钥从环境变量
-LLM_API_KEY / OPENROUTER_API_KEY 或仓库根目录的 .env 读取（自动加载，且永不
-覆盖已有环境变量）。当未配置密钥时，get_client() 返回 None，调用方回退到
-规则逻辑。
-
-兼容说明：保留 ``OpenAICompatibleClient`` 类与 ``.chat`` / ``.chat_json`` /
-``.model`` 接口，使 runner.py / hikvision_real_env.py 零改动；``.chat_json``
-新增 ``response_model`` 参数支持 structured output。另提供模块级 ``chat_json``
-函数作为新接口（供 advisor.py Task 2.3 等新代码使用）。
+用 openai SDK + pydantic structured output 替换手写 urllib + JSON 抽取。
+无 LLM_API_KEY 时 get_client() 返回 None,调用方回退规则兜底。
 """
-
-from __future__ import annotations
-
-import json
 import logging
 import os
-from typing import Optional
-
 from openai import OpenAI
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
-
 DEFAULT_MODEL = "tencent/hy3:free"
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-
 _DOTENV_LOADED = False
 
 
-def _load_dotenv(path: str | None = None) -> None:
-    """将 .env 加载进 os.environ，但不覆盖已有变量（保留以避免引入 python-dotenv）。"""
+def _load_dotenv() -> None:
+    """极简 .env 加载(不覆盖已有变量;保留以避免引入 python-dotenv)。"""
     global _DOTENV_LOADED
-    if _DOTENV_LOADED:
-        return
+    if _DOTENV_LOADED: return
     _DOTENV_LOADED = True
-    if path is None:
-        here = os.path.dirname(os.path.abspath(__file__))
-        # business/hikvision/llm.py -> 仓库根目录：向上 3 层
-        path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(here))), ".env")
-    if not os.path.exists(path):
+    here = os.path.dirname(os.path.abspath(__file__))
+    env = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(here))), ".env")
+    if not os.path.exists(env):
         return
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(env, encoding="utf-8") as fh:
             for line in fh:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, val = line.partition("=")
-                key, val = key.strip(), val.strip()
-                if len(val) >= 2 and val[0] in ("'", '"') and val[-1] == val[0]:
-                    val = val[1:-1]
-                if key and key not in os.environ:
-                    os.environ[key] = val
+                s = line.strip()
+                if s and not s.startswith("#") and "=" in s:
+                    k, _, v = s.partition("=")
+                    v = v.strip()
+                    if len(v) >= 2 and v[0] in "'\"" and v[-1] == v[0]:
+                        v = v[1:-1]
+                    k = k.strip()
+                    if k and k not in os.environ:
+                        os.environ[k] = v
     except OSError:
         return
 
 
-def _api_key() -> str | None:
-    """读取 LLM API 密钥：LLM_API_KEY > OPENROUTER_API_KEY > .env。"""
+def get_client() -> OpenAI | None:
+    """构造 OpenAI 客户端;无密钥返回 None(调用方回退规则兜底)。"""
     key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
-    if key:
-        return key
-    _load_dotenv()
-    return (
-        os.environ.get("LLM_API_KEY")
-        or os.environ.get("OPENROUTER_API_KEY")
-        or None
-    )
-
-
-def _extract_first_json(text: str) -> dict | None:
-    """从文本中抽取第一个 JSON 对象（可容忍嵌套花括号）。
-
-    作为无 ``response_model`` 时的回退路径（向后兼容 runner.py /
-    hikvision_real_env.py 的旧调用方）；新代码应优先用 structured output
-    （``response_model`` 参数）。
-    """
-    if not text:
-        return None
-    start = text.find("{")
-    if start == -1:
-        return None
-    depth = 0
-    in_str = False
-    esc = False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                snippet = text[start: i + 1]
-                try:
-                    return json.loads(snippet)
-                except ValueError:
-                    return None
-    return None
-
-
-class OpenAICompatibleClient:
-    """薄 wrapper：用 openai SDK 替代手写 urllib，保持原 ``.chat`` / ``.chat_json``
-    / ``.model`` 接口。
-
-    新增 ``response_model`` 参数支持 pydantic structured output
-    （``client.beta.chat.completions.parse``），优于手写 JSON 抽取。
-    """
-
-    def __init__(self, api_key: str, model: str, base_url: str) -> None:
-        self._client = OpenAI(
-            api_key=api_key,
-            base_url=base_url.rstrip("/"),
-            default_headers={
-                "HTTP-Referer": "stability-harness-hikvision",
-                "X-Title": "hikvision-advisor",
-            },
-        )
-        self.model = model  # 向后兼容（hikvision_real_env.py 引用 llm.model）
-
-    def chat(self, system_prompt: str, user_prompt: str,
-             timeout: float = 30.0) -> str | None:
-        """返回模型文本；失败时返回 None（调用方回退到规则逻辑）。"""
-        try:
-            completion = self._client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.0,
-                max_tokens=512,
-                timeout=timeout,
-            )
-            return completion.choices[0].message.content
-        except Exception as exc:  # noqa: BLE001 - 失败一律回退规则
-            logger.warning("LLM chat 调用失败，回退规则兜底: %s", exc)
-            return None
-
-    def chat_json(self, system_prompt: str, user_prompt: str,
-                  timeout: float = 30.0,
-                  response_model: Optional[type[BaseModel]] = None) -> dict | None:
-        """chat + JSON 抽取；失败时返回 None。
-
-        - ``response_model`` 非 None：用 openai structured output（pydantic 校验），
-          返回 ``model_dump()``
-        - ``response_model`` 为 None：普通 chat completion，文本经
-          ``_extract_first_json`` 抽取（向后兼容旧调用方）
-        """
-        if response_model is not None:
-            try:
-                completion = self._client.beta.chat.completions.parse(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    response_format=response_model,
-                    timeout=timeout,
-                )
-                parsed = completion.choices[0].message.parsed
-                return parsed.model_dump() if parsed else None
-            except Exception as exc:  # noqa: BLE001 - 失败一律回退规则
-                logger.warning("LLM structured output 调用失败，回退规则兜底: %s", exc)
-                return None
-        # 无 response_model：走普通 chat，再抽取 JSON（向后兼容旧调用方）
-        text = self.chat(system_prompt, user_prompt, timeout=timeout)
-        if not text:
-            return None
-        return _extract_first_json(text)
-
-
-def get_client() -> "OpenAICompatibleClient | None":
-    """构造客户端；若无密钥则返回 None（调用方回退到规则逻辑）。"""
-    key = _api_key()
+    if not key:
+        _load_dotenv()
+        key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
     if not key:
         return None
-    model = os.environ.get("LLM_MODEL") or os.environ.get(
-        "OPENROUTER_MODEL", DEFAULT_MODEL)
     base_url = os.environ.get("LLM_BASE_URL") or os.environ.get(
         "OPENROUTER_BASE_URL", DEFAULT_BASE_URL)
-    return OpenAICompatibleClient(api_key=key, model=model, base_url=base_url)
+    return OpenAI(api_key=key, base_url=base_url.rstrip("/"), default_headers={
+        "HTTP-Referer": "stability-harness-hikvision", "X-Title": "hikvision-advisor"})
 
 
-def chat_json(client: Optional["OpenAICompatibleClient"], system_prompt: str,
-              user_prompt: str,
-              response_model: Optional[type[BaseModel]] = None) -> Optional[dict]:
-    """模块级便捷函数：调用 ``OpenAICompatibleClient.chat_json``。
-
-    供 Task 2.3 的 advisor.py 用（以模块级函数形式调用 LLM）。
-    ``client`` 为 ``None`` 时返回 ``None``（调用方回退规则兜底）。
+def chat_json(client: OpenAI | None, system_prompt: str, user_prompt: str,
+              response_model: type[BaseModel] | None = None,
+              timeout: float = 30.0) -> dict | None:
+    """调用 LLM 返回 dict;失败返回 None(调用方回退规则兜底)。
+    response_model 非 None 时用 structured output 返回 model_dump();为 None 时普通 chat 返回 ``{"text": ...}``。
     """
     if client is None:
         return None
-    return client.chat_json(system_prompt, user_prompt,
-                            response_model=response_model)
+    model = os.environ.get("LLM_MODEL") or os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL)
+    msgs = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+    try:
+        if response_model is not None:
+            resp = client.beta.chat.completions.parse(
+                model=model, messages=msgs, response_format=response_model, timeout=timeout)
+            parsed = resp.choices[0].message.parsed
+            return parsed.model_dump() if parsed else None
+        resp = client.chat.completions.create(
+            model=model, messages=msgs, temperature=0.0, max_tokens=512, timeout=timeout)
+        return {"text": resp.choices[0].message.content}
+    except Exception as exc:  # noqa: BLE001 - 失败一律回退规则
+        logger.warning("LLM 调用失败,回退规则兜底: %s", exc)
+        return None
 
 
-__all__ = ["OpenAICompatibleClient", "get_client", "chat_json",
-           "DEFAULT_MODEL", "DEFAULT_BASE_URL"]
+__all__ = ["get_client", "chat_json", "DEFAULT_MODEL", "DEFAULT_BASE_URL"]

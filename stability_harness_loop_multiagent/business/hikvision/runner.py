@@ -29,7 +29,7 @@ from ...multi_agent.observers.scribe import ScribeAgent
 from .adapter import HikvisionAdapter
 from .advisor import HikvisionAdvisor
 from .diagnostic import DiagnosticKernel, HEAL_TIME_SYNC, HEAL_RETRIGGER
-from .llm import get_client
+from .llm import chat_json, get_client
 from .worker import HikvisionWorker
 
 
@@ -47,28 +47,12 @@ def _default_llm_decide(env: dict) -> str:
     return HEAL_RETRIGGER
 
 
-def _make_llm_parse() -> Callable[[str], Dict] | None:
-    """若配置了 API 密钥，返回真实 LLM 解析可调用对象，否则返回 None。"""
-    client = get_client()
-    if client is None:
-        return None
-
-    system_prompt = (
-        "你是一名海康门禁稳定性测试规划器。"
-        "请将用户指令解析为 JSON。")
-
-    def _parse(instruction: str) -> Dict[str, Any]:
-        if not instruction:
-            return _default_parse(instruction)
-        result = client.chat_json(system_prompt, instruction)
-        if not isinstance(result, dict):
-            return _default_parse(instruction)
-        return result
-    return _parse
-
-
 def _make_llm_decide() -> Callable[[dict], str] | None:
-    """若配置了 API 密钥，返回真实 LLM 决策可调用对象，否则返回 None。"""
+    """若配置了 API 密钥，返回真实 LLM 决策可调用对象，否则返回 None。
+
+    使用模块级 ``chat_json``（``response_model=None`` → 返回 ``{"text": ...}``），
+    再手动解析 JSON 取 ``decision`` 字段。失败一律回退 ``HEAL_RETRIGGER``。
+    """
     client = get_client()
     if client is None:
         return None
@@ -80,11 +64,16 @@ def _make_llm_decide() -> Callable[[dict], str] | None:
         '请返回 JSON {"decision": "<名称>"}。')
 
     def _decide(env: dict) -> str:
-        result = client.chat_json(system_prompt, json.dumps(env))
+        result = chat_json(client, system_prompt, json.dumps(env))
         if not isinstance(result, dict):
             return HEAL_RETRIGGER
-        decision = result.get("decision", HEAL_RETRIGGER)
-        return decision
+        try:
+            parsed = json.loads(result.get("text", ""))
+        except (json.JSONDecodeError, TypeError):
+            return HEAL_RETRIGGER
+        if not isinstance(parsed, dict):
+            return HEAL_RETRIGGER
+        return parsed.get("decision", HEAL_RETRIGGER)
     return _decide
 
 
@@ -133,9 +122,10 @@ async def run_hikvision_stability(
     HikvisionWorker。``pre_loop_setup()`` 在 worker 启动之后（以便其能发布）
     但 Loop 启动之前调用，从而使基准重启耗时只测量一次并在每轮复用。返回包含
     ctx/loop/worker/advisor/telemetry/config 的字典。
+
+    ``llm_parse`` 仅在调用方显式传入（如测试桩）时透传给 advisor；为 None 时
+    advisor 内部自取 LLM 客户端 + ``LLMPlan`` 解析（无密钥则回退规则兜底）。
     """
-    if llm_parse is None:
-        llm_parse = _make_llm_parse() or _default_parse
     if llm_decide is None:
         llm_decide = _make_llm_decide() or _default_llm_decide
 
