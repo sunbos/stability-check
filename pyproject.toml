@@ -11,6 +11,9 @@ dependencies = []  # Entire project: zero third-party runtime deps, stdlib only
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+# 示例脚本（examples/）的可选美化依赖：装了 rich 终端输出自动 CJK 对齐/表格，
+# 不装则回退标准库宽度感知对齐；框架核心包不依赖它。
+examples = ["rich>=13"]
 
 [tool.setuptools.packages.find]
 include = ["stability_harness_loop_multiagent*"]

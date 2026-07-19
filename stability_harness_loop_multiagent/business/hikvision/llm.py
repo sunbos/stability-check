@@ -1,10 +1,9 @@
-"""OpenAI-compatible LLM client using stdlib urllib only (zero deps).
+"""兼容 OpenAI 的大模型客户端，仅使用标准库 urllib（零依赖）。
 
-Mirrors master branch tests/harness/llm_client.py. Defaults to OpenRouter
-free model tencent/hy3:free. API key read from env LLM_API_KEY /
-OPENROUTER_API_KEY or repo-root .env (auto-loaded, never overwrites
-existing env). When no key is available, get_client() returns None and
-callers fall back to rule-based logic.
+对应主干分支 tests/harness/llm_client.py。默认使用 OpenRouter 免费模型
+tencent/hy3:free。API 密钥从环境变量 LLM_API_KEY / OPENROUTER_API_KEY 或
+仓库根目录的 .env 读取（自动加载，且永不覆盖已有环境变量）。当未配置密钥时，
+get_client() 返回 None，调用方回退到规则逻辑。
 """
 
 from __future__ import annotations
@@ -21,14 +20,14 @@ _DOTENV_LOADED = False
 
 
 def _load_dotenv(path: str | None = None) -> None:
-    """Load .env into os.environ without overriding existing vars."""
+    """将 .env 加载进 os.environ，但不覆盖已有变量。"""
     global _DOTENV_LOADED
     if _DOTENV_LOADED:
         return
     _DOTENV_LOADED = True
     if path is None:
         here = os.path.dirname(os.path.abspath(__file__))
-        # business/hikvision/llm.py -> repo root: up 3 levels
+        # business/hikvision/llm.py -> 仓库根目录：向上 3 层
         path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(here))), ".env")
     if not os.path.exists(path):
@@ -50,7 +49,7 @@ def _load_dotenv(path: str | None = None) -> None:
 
 
 def _api_key() -> str | None:
-    """Read LLM API key: LLM_API_KEY > OPENROUTER_API_KEY > .env."""
+    """读取 LLM API 密钥：LLM_API_KEY > OPENROUTER_API_KEY > .env。"""
     key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
     if key:
         return key
@@ -63,7 +62,7 @@ def _api_key() -> str | None:
 
 
 def get_client() -> "OpenAICompatibleClient | None":
-    """Build client; return None if no key (caller falls back to rules)."""
+    """构造客户端；若无密钥则返回 None（调用方回退到规则逻辑）。"""
     key = _api_key()
     if not key:
         return None
@@ -75,16 +74,16 @@ def get_client() -> "OpenAICompatibleClient | None":
 
 
 class OpenAICompatibleClient:
-    """Minimal OpenAI-compatible chat-completions client (stdlib only)."""
+    """极简的、兼容 OpenAI 的对话补全客户端（仅标准库）。"""
 
     def __init__(self, api_key: str, model: str, base_url: str) -> None:
-        self.api_key = api_key  # in-memory only, never logged
+        self.api_key = api_key  # 仅存内存，绝不打印日志
         self.model = model
         self.base_url = base_url.rstrip("/")
 
     def chat(self, system_prompt: str, user_prompt: str,
              timeout: float = 30.0) -> str | None:
-        """Return model text; None on failure (caller degrades to rules)."""
+        """返回模型文本；失败时返回 None（调用方回退到规则逻辑）。"""
         url = self.base_url + "/chat/completions"
         payload = {
             "model": self.model,
@@ -115,7 +114,7 @@ class OpenAICompatibleClient:
 
     def chat_json(self, system_prompt: str, user_prompt: str,
                   timeout: float = 30.0) -> dict | None:
-        """chat() + extract first JSON object; None on failure."""
+        """chat() + 抽取第一个 JSON 对象；失败时返回 None。"""
         text = self.chat(system_prompt, user_prompt, timeout=timeout)
         if not text:
             return None
@@ -123,7 +122,7 @@ class OpenAICompatibleClient:
 
 
 def _extract_first_json(text: str) -> dict | None:
-    """Extract first JSON object from text (tolerant of nested braces)."""
+    """从文本中抽取第一个 JSON 对象（可容忍嵌套花括号）。"""
     start = text.find("{")
     if start == -1:
         return None

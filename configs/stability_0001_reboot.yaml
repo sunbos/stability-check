@@ -1,0 +1,39 @@
+# 用例 Stability_0001 —— 频繁热重启主机后设备在线状态正常（重启稳定性 / 主设备）
+#
+# 对应《门禁对讲通用稳定性用例集》Stability_0001：
+#   协议：PUT /ISAPI/System/reboot（下发重启）
+#   变量：reboot_total_time（默认 1000）、reboot_interval（默认 90S）
+#   预期：重启后硬件、软件启动及运行正常
+#
+# 本文件即「一份用例 = 一份 YAML」。新增用例只需复制本文件并改字段，无需改代码。
+# 敏感信息（host / password）用 ${VAR} 从环境变量注入，不落库。
+
+id: Stability_0001
+name: 频繁热重启主机后设备在线状态正常
+category: 重启稳定性
+level: L2
+
+target:
+  host: "${HIK_HOST:-192.168.3.33}"
+  port: 80
+  username: "admin"
+  password: "${HIK_PASSWORD}"
+  http_timeout: 5
+
+stress:
+  type: reboot            # 每轮重启一次主设备
+  reboot_after: true     # 重启会让设备掉线，等待其重新上线
+  wait_online_timeout: 180
+
+probe:
+  method: GET
+  endpoint: /ISAPI/AccessControl/AcsWorkStatus?format=json
+  field: AcsWorkStatus.doorOnlineStatus[0]   # 门在线状态：1=在线
+  expect_equals: 1
+  # na_if_absent: AcsWorkStatus.doorOnlineStatus  # 若设备无此字段则视为 NA
+
+loop:
+  max_rounds: 3          # 演示用 3 轮；真实压测可按需改大（如 1000）
+  interval_seconds: 90   # 轮间间隔（对应 reboot_interval）
+  stop_on_na: false
+  fail_threshold: 0

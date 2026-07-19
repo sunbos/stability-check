@@ -4,8 +4,8 @@
 
   1. 循环会终止（到达其轮次上限；无死锁 / 挂起）。
   2. 每轮都由权威的 DecisionAuthority 产生裁决。
-  3. 观察者会收到事件（总线扇出端到端可用）。
-  4. 事实独裁：一个被注入的失败事实会强制产生 'fail' 裁决，尽管顾问以高
+  3. Observer 会收到事件（总线扇出端到端可用）。
+  4. 事实独裁：一个被注入的失败事实会强制产生 'fail' 裁决，尽管 Advisor 以高
      置信度投出了低风险。
 
 仅使用标准库。运行方式：
@@ -33,7 +33,7 @@ from stability_harness_loop_multiagent.examples.smoke import (
 @pytest.mark.asyncio
 async def test_loop_terminates_and_produces_verdicts():
     result = await run_smoke(fail=False, max_rounds=5)
-    # 不变量 1 + 2 + 3：终止、产生了裁决、观察者看到了事件。
+    # 不变量 1 + 2 + 3：终止、产生了裁决、Observer 看到了事件。
     assert_healthy(result)
     # 无死锁：本次运行已返回（asyncio.wait_for 本会超时）。
     assert result["ctx"].round_count == 5
@@ -43,7 +43,7 @@ async def test_loop_terminates_and_produces_verdicts():
 @pytest.mark.asyncio
 async def test_fact_dictatorship_failing_fact_forces_fail():
     result = await run_smoke(fail=True, max_rounds=5)
-    # 不变量 4：事实独裁覆盖了高置信度的低风险顾问投票。
+    # 不变量 4：事实独裁覆盖了高置信度的低风险 Advisor 投票。
     assert_failing_fact(result)
 
 
@@ -56,7 +56,7 @@ def test_decision_authority_fact_dictatorship_unit():
     assert v.reason.startswith("事实未满足")
     # 所有事实满足 + 低风险 => pass。
     assert dec.decide({"acted": True, "state_ok": True}, risk_score=30.0).decision == "pass"
-    # 空事实字典是“没有 falsy 事实” => pass（当没有工作者上报时，循环会注入
+    # 空事实字典是“没有 falsy 事实” => pass（当没有 Worker 上报时，Loop 会注入
     # 一个失败的 'checks_received' 事实，见 ControlLoop._merge_facts）。
     assert dec.decide({}, risk_score=10.0).decision == "pass"
 

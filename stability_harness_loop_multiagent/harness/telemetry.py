@@ -2,7 +2,7 @@
 
 既向本地输出槽（例如 PrintSink）发出 trace/metric 记录，也向总线上的
 ``harness/metric/<name>``（指标）与 ``harness/trace``（追踪）发出，这样任何
-观察者智能体都能消费它们，而无需与本模块耦合。
+Observer 智能体都能消费它们，而无需与本模块耦合。
 """
 
 import json
@@ -10,7 +10,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from .bus import EventBus
+from ..core.bus import EventBus
 
 
 class Sink:
@@ -81,6 +81,15 @@ class Telemetry:
     def metric(self, name: str, value: float, **fields: Any) -> Dict[str, Any]:
         return self._emit("metric", name, {**fields, "value": value})
 
+    def fact(self, name: str, **fields: Any) -> Dict[str, Any]:
+        """结构化事实上报（kind="fact"）。
+
+        与 trace/metric 区分：fact 表示「一个已发生的治理/裁决结论」，
+        例如 ``governance.decision``（哪一轮、为何被拒/放行、按操作拒绝哪些），
+        便于观测面板直接消费，不污染 trace/metric 流。
+        """
+        return self._emit("fact", name, fields)
+
     def _emit(self, kind: str, name: str, fields: Dict[str, Any]) -> Dict[str, Any]:
         record = {"kind": kind, "name": name, "ts": time.time(), **fields}
         for sink in self._sinks:
@@ -89,7 +98,12 @@ class Telemetry:
             except Exception:  # noqa: BLE001
                 self._log.exception("sink 出错")
         if self.bus is not None:
-            topic = f"harness/metric/{name}" if kind == "metric" else "harness/trace"
+            if kind == "metric":
+                topic = f"harness/metric/{name}"
+            elif kind == "fact":
+                topic = f"harness/fact/{name}"
+            else:
+                topic = "harness/trace"
             self.bus.publish(topic, record)
         return record
 

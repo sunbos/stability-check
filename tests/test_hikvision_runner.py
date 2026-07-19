@@ -9,13 +9,16 @@ async def test_runner_completes_with_fake_client():
     """run_reboot=False: loop completes 3 rounds within timeout.
 
     Using run_reboot=False + event_check_delay=0.0 avoids the ~60s baseline
-    reboot probe in pre_loop_setup and keeps each round ~5s. The reboot
-    flow is covered by test_hikvision_worker.py.
+    reboot probe in pre_loop_setup. ControlLoop hard-waits
+    max(recover_timeout, check_timeout) per round (driver.py); with the door
+    close-poll timeout formula (max(event_check_delay, open_duration*3+5)+3)
+    each round is ~14s, so run_timeout must cover 3 rounds (~42s) plus margin.
+    The reboot flow is covered by test_hikvision_worker.py.
     """
     result = await run_hikvision_stability(
         client=FakeHikvisionClient(),
         max_rounds=3,
-        run_timeout=30.0,
+        run_timeout=60.0,
         run_reboot=False,
         event_check_delay=0.0,
     )

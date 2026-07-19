@@ -1,0 +1,49 @@
+# 场景模板 —— 复制本文件、改字段即可新增一条稳定性用例（零代码）。
+#
+# 一条用例 = target（设备）+ stress（压力）+ probe（断言）+ loop（停止条件）。
+# 支持的 stress.type：reboot | upgrade | issue | none
+#   - reboot   ：每轮 PUT /ISAPI/System/reboot 并等待上线
+#   - upgrade  ：每轮向 stress.endpoint 发 stress.method 请求（设备会重启）
+#   - issue    ：每轮向 stress.endpoint 下发（不下发后不重启）
+#   - none     ：仅周期探测（长巡 / 网络 / 硬件状态类用例）
+#
+# probe.field 支持点号分段与列表下标：AcsWorkStatus.doorOnlineStatus[0]
+#   - expect_equals / expect_in 至少填一个用于断言
+#   - na_if_absent：指定的「存在性字段」缺失 => 本用例 NA（不判失败）
+
+id: <用例编号>
+name: <用例名称>
+category: <子模块>
+level: L2
+
+target:
+  host: "${HIK_HOST:-192.168.3.33}"
+  port: 80
+  username: "admin"
+  password: "${HIK_PASSWORD}"
+  http_timeout: 5
+
+stress:
+  type: none             # reboot | upgrade | issue | none
+  endpoint: null         # upgrade/issue 必填
+  method: PUT            # upgrade/issue 的请求方法
+  body: null             # upgrade/issue 的请求体（dict / str）
+  body_file: null        # 可选：从文件读取 body（覆盖 body）
+  reboot_after: true     # reboot/upgrade 会让设备重启 -> 等待上线
+  wait_online_timeout: 180
+
+probe:
+  method: GET
+  endpoint: /ISAPI/AccessControl/AcsWorkStatus?format=json
+  field: AcsWorkStatus.doorOnlineStatus[0]
+  expect_equals: 1
+  expect_in: null        # 或：["online", "connect"]
+  na_if_absent: null     # 如 AcsWorkStatus.doorOnlineStatus
+
+loop:
+  max_rounds: 3
+  interval_seconds: 90
+  deadline: null         # 可选 "HH:MM"，超过即停止（NT）
+  max_duration: 0        # 可选墙钟预算（秒）
+  stop_on_na: false
+  fail_threshold: 0

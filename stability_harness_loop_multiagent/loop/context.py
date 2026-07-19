@@ -1,4 +1,4 @@
-"""SharedContext —— 由循环独占的可写状态，附带每轮的不可变快照。
+"""SharedContext —— 由 ControlLoop 独占的可写状态，附带每轮的不可变快照。
 
 循环持有唯一的可写视图（SharedContext）。每轮结束后，它会刷新出一个
 不可变的快照，作为 ReadOnlyContext 暴露给智能体，于是智能体观察到的是一份
@@ -65,7 +65,7 @@ class ReadOnlyContext:
 
 
 class SharedContext:
-    """由控制循环独占的可写上下文。"""
+    """由 ControlLoop 独占的可写上下文。"""
 
     def __init__(
         self, baseline: Any = None, strategy_text: str = ""

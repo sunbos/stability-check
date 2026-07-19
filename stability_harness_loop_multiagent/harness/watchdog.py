@@ -1,7 +1,7 @@
 """Watchdog —— 部署在执行引擎（loop/multi_agent）之外的存活 / 停滞 / 死锁探测器。
 
-它监视循环进度与心跳；当控制循环停滞（在 ``stall_timeout`` 内无任何活动）时，
-它发布 ``harness/abort``。由于它独立于 loop/multi_agent，即使循环已死锁，
+它监视 Loop 进度与心跳；当 ControlLoop 停滞（在 ``stall_timeout`` 内无任何活动）时，
+它发布 ``harness/abort``。由于它独立于 loop/multi_agent，即使 Loop 已死锁，
 它仍能注入一个中止信号。
 """
 
@@ -10,8 +10,8 @@ import logging
 import time
 from typing import List
 
-from .agent import Agent, AgentSpec
-from .bus import EventBus
+from ..core.agent import Agent, AgentSpec
+from ..core.bus import EventBus
 
 
 class Watchdog(Agent):

@@ -7,7 +7,7 @@ EventBus 将三个引擎连接起来：
     loop    : ControlLoop + RunConfig + DecisionAuthority + TerminationPolicy
     multi_agent     : FakeTargetAdapter + WorkerAgent + AdvisorAgent + ObserverAgent
 
-唯一的“目标”是一个合成的内存计数器（FakeTargetAdapter）：工作者在每次
+唯一的“目标”是一个合成的内存计数器（FakeTargetAdapter）：Worker 在每次
 act() 时使其自增，并报告合成的状态/事件。没有涉及真实的设备、服务或领域，
 因此该演示保持通用。
 
@@ -79,7 +79,7 @@ class FakeTargetAdapter:
 # MAS 角色 —— 通用的；不包含任何具体的领域知识。
 # --------------------------------------------------------------------------
 class FakeWorker(WorkerAgent):
-    """驱动 FakeTargetAdapter 的工作者。
+    """驱动 FakeTargetAdapter 的 Worker。
 
     在每个 loop/tick 上发布标准流水线：
         target/acted, target/recovered, target/checked, agent/<role>/done
@@ -92,7 +92,7 @@ class FakeWorker(WorkerAgent):
 
 
 class FixedAdvisor(AdvisorAgent):
-    """最小化的顾问：每轮投出一个固定的（风险、置信度）。"""
+    """最小化的 Advisor：每轮投出一个固定的（风险、置信度）。"""
 
     def __init__(self, bus, spec, *, risk: float = 30.0, confidence: float = 0.9,
                  weight: float = 1.0) -> None:
@@ -105,7 +105,7 @@ class FixedAdvisor(AdvisorAgent):
 
 
 class PrintingObserver(ObserverAgent):
-    """记录所见到的每个事件，并打印 loop/done 摘要的观察者。"""
+    """记录所见到的每个事件，并打印 loop/done 摘要的 Observer。"""
 
     def __init__(self, bus, spec) -> None:
         super().__init__(bus, spec)
@@ -217,12 +217,12 @@ def assert_healthy(result: dict) -> None:
         "健康运行应当只产生 'pass' 裁决："
         f"{[r.verdict for r in history]}"
     )
-    # 3) 观察者收到了事件（至少收到了 loop/done）
-    assert observer.seen, "观察者没有收到任何事件"
+    # 3) Observer 收到了事件（至少收到了 loop/done）
+    assert observer.seen, "Observer 没有收到任何事件"
     assert any(t == "loop/done" for t, _ in observer.seen)
-    # 4) 工作者确实通过假适配器在每轮都执行了操作
+    # 4) Worker 确实通过假适配器在每轮都执行了操作
     assert adapter.counter == ctx.round_count, (
-        f"工作者执行了 {adapter.counter} 次，但运行了 {ctx.round_count} 轮"
+        f"Worker 执行了 {adapter.counter} 次，但运行了 {ctx.round_count} 轮"
     )
 
 
@@ -232,7 +232,7 @@ def assert_failing_fact(result: dict) -> None:
     history = ctx.snapshot().round_history
 
     # 事实独裁：一个被注入的失败事实必须产生一个 'fail' 裁决，
-    # 即使顾问以高置信度投出了低风险（30）。
+    # 即使 Advisor 以高置信度投出了低风险（30）。
     assert any(r.verdict == "fail" for r in history), (
         "失败事实应当至少强制出一个 'fail' 裁决："
         f"{[r.verdict for r in history]}"

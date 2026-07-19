@@ -1,0 +1,49 @@
+# 用例 Stability_0009 —— 查看有线网络状态效果（网络连接稳定性 / 网卡状态）
+#
+# 对应《门禁对讲通用稳定性用例集》Stability_0009：
+#   协议：GET /ISAPI/AccessControl/AcsWorkStatus?format=json
+#   变量：test_interval（默认 10S）、test_deadline（默认 23:50）
+#   预期：长时间运行，有线网络正常在线(connect)
+#   不通过：断开连接(disconnect) / IP 冲突(ipConflict)
+#   未测试(NT)：当前时间 > test_deadline 时用例不执行
+#
+# 此为「长巡 + 截止时间 + NA」类用例的典型模板：不重启设备，只周期性探测，
+# 越过截止时间即停止（NT）。探测字段名（此处为 doorOnlineStatus 作「设备在线」
+# 代理）应按真实设备的网络状态字段替换——本文件仅作可运行示例。
+#
+# 注意：本用例演示三类停止条件的组合：
+#   - max_rounds / interval_seconds：轮询节奏
+#   - deadline：超过当日 23:50 停止（NT）
+#   - na_if_absent + stop_on_na：设备不支持该字段时立即停止（NA）
+
+id: Stability_0009
+name: 查看有线网络状态效果
+category: 网络连接稳定性
+level: L2
+
+target:
+  host: "${HIK_HOST:-192.168.3.33}"
+  port: 80
+  username: "admin"
+  password: "${HIK_PASSWORD}"
+  http_timeout: 5
+
+stress:
+  type: none             # 长巡类用例不施加压力，仅探测
+  reboot_after: false
+
+probe:
+  method: GET
+  endpoint: /ISAPI/AccessControl/AcsWorkStatus?format=json
+  # 真实场景应替换为有线网络状态字段（如 netWorkStatus.connect 之类）；
+  # 此处用门在线状态作「设备在线」代理，保证示例可直接运行/断言。
+  field: AcsWorkStatus.doorOnlineStatus[0]
+  expect_equals: 1
+  na_if_absent: AcsWorkStatus.doorOnlineStatus   # 缺字段 => NA
+
+loop:
+  max_rounds: 1000       # 长巡：轮数很大，实际由 deadline 触发停止
+  interval_seconds: 10   # 对应 test_interval（默认 10S）
+  deadline: "23:50"      # 对应 test_deadline（默认 23:50）
+  stop_on_na: true
+  fail_threshold: 0

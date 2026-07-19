@@ -9,3 +9,10 @@ __pycache__/
 research_*_findings.json
 *.findings.json
 agent-*.jsonl
+
+# 运行日志（真机/演练产物，非交付物）
+logs/
+_probe.log
+
+# Office 临时锁文件（Excel/Word 打开时自动生成）
+~$*

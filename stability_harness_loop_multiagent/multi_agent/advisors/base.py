@@ -7,8 +7,8 @@
 
 import time
 
-from ...harness.agent import Agent, AgentSpec
-from ...harness.bus import EventBus
+from ...core.agent import Agent, AgentSpec
+from ...core.bus import EventBus
 
 
 class AdvisorAgent(Agent):

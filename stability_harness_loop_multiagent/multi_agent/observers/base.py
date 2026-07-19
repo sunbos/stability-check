@@ -3,8 +3,8 @@
 消费事件并上报/通知。绝不裁决。在 spec 中订阅事件主题并实现 ``on_event``。
 """
 
-from ...harness.agent import Agent, AgentSpec
-from ...harness.bus import EventBus
+from ...core.agent import Agent, AgentSpec
+from ...core.bus import EventBus
 
 
 class ObserverAgent(Agent):

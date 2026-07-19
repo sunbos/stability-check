@@ -17,8 +17,8 @@ import asyncio
 import logging
 import time
 
-from ...harness.agent import AgentSpec
-from ...harness.bus import EventBus
+from ...core.agent import AgentSpec
+from ...core.bus import EventBus
 from .base import AdvisorAgent
 
 

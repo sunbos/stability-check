@@ -15,14 +15,14 @@
 import asyncio
 import logging
 
-from ...harness.agent import AgentSpec
-from ...harness.bus import EventBus
+from ...core.agent import AgentSpec
+from ...core.bus import EventBus
 from .base import WorkerAgent
 from ..adapter import TargetAdapter, State
 
 
 class ExampleWorkerAgent(WorkerAgent):
-    """通用工作者：在每个 ``loop/tick`` 上循环执行 act -> recover -> check。"""
+    """通用 Worker：在每个 ``loop/tick`` 上循环执行 act -> recover -> check。"""
 
     def __init__(
         self,
@@ -94,7 +94,7 @@ __all__ = ["ExampleWorkerAgent"]
 if __name__ == "__main__":  # 运行方式：python -m stability_harness_loop_multiagent.multi_agent.workers.example
     import time
 
-    from ...harness.bus import EventBus
+    from ...core.bus import EventBus
     from ..adapter import Result, State
 
     class StubAdapter:

@@ -1,23 +1,23 @@
-"""ScribeAgent —— 保有私有时间线 + 摘要的观察者。
+"""ScribeAgent —— 保有私有时间线 + 摘要的 Observer。
 
-订阅轮次 / 事件 / 中止事件，并保有它*自己的*时间线；它绝不触及共享的循环
+订阅轮次 / 事件 / 中止事件，并保有它*自己的*时间线；它绝不触及共享的 Loop
 上下文，也绝不裁决任何东西。它还能通过发布 ``scribe/summary`` 来回应
 ``scribe/summary/request``，附带一份聚合摘要（决策分布、风险统计、事件计数）。
 
-纯观察：可安全地添加或移除，而不会影响循环行为。
+纯观察：可安全地添加或移除，而不会影响 Loop 行为。
 """
 
 import logging
 import time
 from collections import Counter
 
-from ...harness.agent import AgentSpec
-from ...harness.bus import EventBus
+from ...core.agent import AgentSpec
+from ...core.bus import EventBus
 from .base import ObserverAgent
 
 
 class ScribeAgent(ObserverAgent):
-    # 本观察者关心的主题（若尚未存在则自动接入）
+    # 本 Observer 关心的主题（若尚未存在则自动接入）
     DEFAULT_SUBSCRIPTIONS = (
         "loop/done",
         "agent/incident",

@@ -44,6 +44,11 @@ class Agent:
     def role(self) -> str:
         return self.spec.role
 
+    @property
+    def is_running(self) -> bool:
+        """智能体当前是否处于激活运行状态（任务存在且未完成）。"""
+        return self._running and self._task is not None and not self._task.done()
+
     # ---- 总线辅助方法 --------------------------------------------------
     def subscribe(self, topic: str, handler: Callable) -> Callable[[], None]:
         return self.bus.subscribe(topic, handler)

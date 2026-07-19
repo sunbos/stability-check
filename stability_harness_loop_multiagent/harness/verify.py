@@ -1,6 +1,6 @@
 """验证 —— 护栏、输入/输出校验钩子、评估钩子。
 
-通用、与领域无关。工作者/harness 在边界处调用 Verifier：
+通用、与领域无关。Worker/Harness 在边界处调用 Verifier：
   - 输入护栏  在请求驱动智能体之前，对其校验/转换。
   - 输出护栏  在消息/结果发布之前，对其校验。
   - 评估钩子  根据期望（断言）为一个轮次/结果打分。
@@ -17,12 +17,13 @@
 引擎隔离：仅从本 harness 包（bus、agent）导入。
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional, Tuple
 
-from .agent import Agent, AgentSpec
-from .bus import EventBus
+from ..core.agent import Agent, AgentSpec
+from ..core.bus import EventBus
 
 
 class VerifyError(Exception):
@@ -186,11 +187,14 @@ class VerificationAgent(Agent):
         req = message if isinstance(message, dict) else {}
         stage = req.get("stage", "input")
         item = req.get("item", req)
+        # 校验链可能含阻塞型 LLM 调用，用 to_thread 移出事件循环，避免冻结总线。
+        self._log.info("校验计划（大模型护栏）：开始")
         try:
             if stage == "output":
-                res = self.verifier.validate_output(item)
+                res = await asyncio.to_thread(self.verifier.validate_output, item)
             else:
-                res = self.verifier.validate_input(item)
+                res = await asyncio.to_thread(self.verifier.validate_input, item)
+            self._log.info("校验计划（大模型护栏）：完成 allowed=%s", res.ok)
             self.respond(message, {"allowed": res.ok, "reason": res.reason, "hook": res.hook})
         except VerifyError as e:
             self.respond(message, {"allowed": False, "reason": e.reason, "hook": e.hook})

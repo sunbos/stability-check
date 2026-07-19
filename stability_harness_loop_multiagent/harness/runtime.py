@@ -17,8 +17,8 @@ import asyncio
 import logging
 from typing import Callable, Dict, List, Optional
 
-from .agent import Agent, AgentSpec
-from .bus import EventBus
+from ..core.agent import Agent, AgentSpec
+from ..core.bus import EventBus
 
 
 class Runtime:
@@ -79,6 +79,8 @@ class Runtime:
     async def start_all(self) -> None:
         for agent in list(self._agents.values()):
             if agent.id in self._intentional_stop:
+                continue
+            if agent.is_running:  # 幂等：已在运行的智能体不重复启动（避免重复订阅）
                 continue
             await agent.start()
         if self.telemetry:

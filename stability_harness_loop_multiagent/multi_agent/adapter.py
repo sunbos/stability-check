@@ -1,7 +1,7 @@
 """TargetAdapter —— MAS 所操作对象的契约。
 
 通用、与领域无关。一个具体场景实现该协议（例如某个设备、服务或资源适配器），
-并注册驱动它的 WorkerAgent。循环引擎从不导入它；由各工作者导入。
+并注册驱动它的 WorkerAgent。Loop 引擎从不导入它；由各 Worker 导入。
 """
 
 from dataclasses import dataclass, field

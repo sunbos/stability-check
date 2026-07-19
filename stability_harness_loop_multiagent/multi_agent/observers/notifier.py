@@ -1,4 +1,4 @@
-"""NotifierAgent —— 带可插拔通知通道的观察者。
+"""NotifierAgent —— 带可插拔通知通道的 Observer。
 
 消费通用的通知主题（``agent/incident``、``loop/abort``、``notify``），并将每个
 事件分派到一个通道。通道有：
@@ -16,8 +16,8 @@ import json
 import logging
 import time
 
-from ...harness.agent import AgentSpec
-from ...harness.bus import EventBus
+from ...core.agent import AgentSpec
+from ...core.bus import EventBus
 from .base import ObserverAgent
 
 

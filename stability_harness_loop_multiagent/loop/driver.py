@@ -1,16 +1,16 @@
-"""ControlLoop —— 确定性的循环引擎（感测->规划->执行->检查->裁决->停止）。
+"""ControlLoop —— 确定性的 Loop 引擎（感测->规划->执行->检查->裁决->停止）。
 
 完全通过事件总线驱动（无直接的引擎 import）。它会：
-  - 发布 ``loop/tick``（触发工作者的感测/规划/执行），
+  - 发布 ``loop/tick``（触发 Worker 的感测/规划/执行），
   - 收集 ``target/recovered`` 与 ``target/checked`` 事实（带超时），
   - 通过 ``loop/vote/request`` 请求投票并收集 ``agent/vote/reply``，
   - 应用 DecisionAuthority，向 SharedContext 追加一条 RoundRecord，
   - 发布 ``loop/done``；若为 recheck 则发布 ``loop/recheck``（最多一次）；
   - 对其他人提出的事件进行 ack，并在终止/harness/abort 时停止。
 
-持有权威裁决结果。风险合并是一个本地的确定性辅助函数（引擎隔离：规范的
-``combine_votes`` 位于 multi_agent/protocols，用于 MAS 侧的聚合；本循环保留
-自己的实现以避免导入 multi_agent）。
+持有权威裁决结果。风险合并复用跨引擎共享的规范 ``combine_votes``（位于
+``core.voting``，loop 与 multi_agent 的唯一来源），引擎隔离不受影响——core
+是中立内核，两者都从 core 导入，不互相 import。
 """
 
 import asyncio
@@ -19,8 +19,9 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from ..harness.agent import Agent, AgentSpec
-from ..harness.bus import EventBus
+from ..core.agent import Agent, AgentSpec
+from ..core.bus import EventBus
+from ..core.voting import combine_votes
 from .context import RoundRecord, SharedContext
 from .decision import (
     CONSERVATIVE_RISK,
@@ -47,10 +48,11 @@ class ControlLoop(Agent):
         termination: TerminationPolicy,
         *,
         vote_timeout: float = 1.0,
+        vote_settle: float = 0.05,
         recover_timeout: float = 30.0,
         check_timeout: float = 30.0,
         recheck_limit: int = 1,
-        combine: Callable[[List[Dict[str, Any]]], float] = None,
+        combine: Callable[[List[Any]], float] = None,
         scheduler: Optional[Scheduler] = None,
         telemetry=None,
     ) -> None:
@@ -67,10 +69,13 @@ class ControlLoop(Agent):
         self.decision = decision
         self.termination = termination
         self.vote_timeout = vote_timeout
+        # 投票静默期：收到至少一票后，若静默期内无新票即视为收齐提前返回。
+        # 上限为 vote_timeout 的一半，下限 0.01，避免过短/过长。防死锁不变量不变。
+        self.vote_settle = min(max(0.01, vote_settle), max(0.01, vote_timeout / 2.0))
         self.recover_timeout = recover_timeout
         self.check_timeout = check_timeout
         self.recheck_limit = recheck_limit
-        self.combine = combine or self._default_combine
+        self.combine = combine or combine_votes
         # 节奏/退避/重试预算引擎。默认值让循环保持安全：1 秒的基础间隔避免了
         # 忙等待自旋，自适应公式会为较慢的目标自动拉长冷却时间。
         self.scheduler = scheduler or Scheduler()
@@ -99,6 +104,13 @@ class ControlLoop(Agent):
             recover_time = await self._run_round()
             if self.ctx.aborted:
                 break
+            # 进入下一轮定速前先复查终止条件：若本轮已满足停止条件
+            # （如 max_rounds 已到），则直接结束，避免在最后一轮之后还空等
+            # 一个完整的轮间间隔（真实设备长回归下这会白白浪费数十秒）。
+            halt, reason = self.termination.should_halt(self.ctx.snapshot())
+            if halt:
+                self._halt(reason)
+                break
             # 使用调度器为循环进入下一轮定速。较慢的目标（较大的 recover_time）
             # 会自动获得更长的冷却时间；较快的目标则保持紧凑。这是循环唯一的
             # 轮间等待，因此一个卡住的调度器无法让循环死锁。
@@ -112,20 +124,40 @@ class ControlLoop(Agent):
         if self.telemetry:
             self.telemetry.metric("loop.round", self._round_no)
 
-        # 在发布 loop/tick 之前同步订阅，这样工作者发送即忘的 target/* 发布
+        # 在发布 loop/tick 之前同步订阅，这样 Worker 发送即忘的 target/* 发布
         # 绝不会被遗漏。
         recover_time: Optional[float] = None
         rec_start = time.time()
+        rec_event = asyncio.Event()
+        chk_event = asyncio.Event()
 
         def _on_recover(msg: Any) -> None:
             nonlocal recover_time
             if recover_time is None and isinstance(msg, dict) and msg.get("recovered"):
                 recover_time = time.time() - rec_start
+            rec_event.set()
+
+        def _on_check(_msg: Any) -> None:
+            chk_event.set()
 
         rec_unsub, rec_buf = self._start_collect("target/recovered", on_first=_on_recover)
-        chk_unsub, chk_buf = self._start_collect("target/checked")
+        chk_unsub, chk_buf = self._start_collect("target/checked", on_first=_on_check)
         self.bus.publish("loop/tick", {"round": self._round_no})
-        await asyncio.sleep(max(self.recover_timeout, self.check_timeout))
+        # 事件驱动：收齐 target/recovered + target/checked 即返回；超时仅作兜底
+        # （防死锁不变量不变）。这避免了回复早已到达却仍硬等满整段超时——
+        # 真实设备每轮可能白等数百秒。
+        waiters = [asyncio.ensure_future(rec_event.wait()),
+                   asyncio.ensure_future(chk_event.wait())]
+        try:
+            await asyncio.wait(
+                waiters,
+                timeout=max(self.recover_timeout, self.check_timeout),
+                return_when=asyncio.ALL_COMPLETED,
+            )
+        finally:
+            for w in waiters:
+                if not w.done():
+                    w.cancel()
         rec_unsub()
         chk_unsub()
         recovered_list = rec_buf
@@ -250,13 +282,35 @@ class ControlLoop(Agent):
         return buf
 
     async def _collect_votes(self) -> List[Dict[str, Any]]:
-        unsub, replies = self._start_collect("agent/vote/reply")
+        buf: List[Any] = []
+        vote_event = asyncio.Event()
+
+        def handler(_t, msg):
+            buf.append(msg)
+            vote_event.set()
+
+        unsub = self.bus.subscribe("agent/vote/reply", handler)
         self.bus.publish("loop/vote/request", {"round": self._round_no})
+        # 事件驱动 + 静默期提前返回：收到至少一票后，若静默期（vote_settle）内
+        # 无新票即视为收齐、立即返回；超时仅作兜底（防死锁不变量不变）。
+        # best-effort 收集，不引入投票者计数耦合：晚于静默期到达的票可被漏收，
+        # 这与「投票为尽力而为」的设计一致。
+        deadline = time.monotonic() + self.vote_timeout
         try:
-            await asyncio.sleep(self.vote_timeout)
+            while time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                try:
+                    await asyncio.wait_for(vote_event.wait(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    break
+                vote_event.clear()
+                # 收到回复后等待静默期；静默期内无新回复即视为收齐
+                await asyncio.sleep(self.vote_settle)
+                if not vote_event.is_set():
+                    break
         finally:
             unsub()
-        return [m for m in replies if isinstance(m, dict)]
+        return [m for m in buf if isinstance(m, dict)]
 
     def _merge_facts(self, facts_list, recovered_list) -> Dict[str, Any]:
         facts: Dict[str, Any] = {}
@@ -264,7 +318,7 @@ class ControlLoop(Agent):
             if isinstance(msg, dict):
                 facts.update(msg.get("facts", {}) or {})
         if not facts:
-            facts["checks_received"] = False  # 没有工作者检查 -> fail
+            facts["checks_received"] = False  # 没有 Worker 检查 -> fail
         # 恢复情况：任意 False（或无回复）=> 未恢复
         if recovered_list:
             recovered = all(
@@ -276,33 +330,12 @@ class ControlLoop(Agent):
         facts["recovered"] = recovered
         return facts
 
-    @staticmethod
-    def _default_combine(votes: List[Dict[str, Any]]) -> float:
-        # 快速路径：任意 risk >= 90 立即胜出
-        for v in votes:
-            if v.get("risk", 0) >= 90:
-                return float(v["risk"])
-        num = 0.0
-        den = 0.0
-        for v in votes:
-            risk = float(v.get("risk", 50.0))
-            conf = float(v.get("confidence", 0.0))
-            w = float(v.get("weight", 1.0))
-            if conf <= 0:  # 弃权
-                continue
-            num += risk * w * conf
-            den += w * conf
-        if den == 0:
-            return 50.0  # 全部弃权时的中性默认值
-        return num / den
-
-
 @dataclass
 class RunConfig:
-    """声明式的控制循环运行参数（通用词汇表）。
+    """声明式的 ControlLoop 运行参数（通用词汇表）。
 
     将高层旋钮映射到 ``TerminationPolicy`` + ``ControlLoop`` 的超时。
-    不内置任何具体场景 —— 由调用方提供工作者 / 顾问 / 观察者 / 适配器。
+    不内置任何具体场景 —— 由调用方提供 Worker / Advisor / Observer / 适配器。
     ``max_duration=0``（默认）会禁用“时长停止”；``fail_threshold=0`` 会禁用
     “失败停止”；二者都与 ``max_rounds`` 以 OR 方式组合（只要 > 0 就始终生效）。
     """
@@ -312,6 +345,7 @@ class RunConfig:
     fail_threshold: int = 0
     fail_consecutive: int = 0
     vote_timeout: float = 0.5
+    vote_settle: float = 0.05
     recover_timeout: float = 1.0
     check_timeout: float = 1.0
     recheck_limit: int = 1

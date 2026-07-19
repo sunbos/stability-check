@@ -1,4 +1,4 @@
-"""stability_harness_loop_multiagent.loop —— 确定性的控制循环引擎（MAPE-K / OODA）。"""
+"""stability_harness_loop_multiagent.loop —— 确定性的 Loop 引擎（ControlLoop，MAPE-K / OODA）。"""
 
 from .context import ReadOnlyContext, RoundRecord, SharedContext
 from .decision import (

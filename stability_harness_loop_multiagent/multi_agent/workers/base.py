@@ -8,15 +8,15 @@
 import asyncio
 import time
 
-from ...harness.agent import Agent, AgentSpec
-from ...harness.bus import EventBus
+from ...core.agent import Agent, AgentSpec
+from ...core.bus import EventBus
 from ..adapter import TargetAdapter
 
 
 class WorkerAgent(Agent):
     def __init__(self, bus: EventBus, spec: AgentSpec, adapter: TargetAdapter) -> None:
         if "loop/tick" not in spec.subscriptions:
-            spec.subscriptions.append("loop/tick")  # 工作者在 tick 上行动
+            spec.subscriptions.append("loop/tick")  # Worker 在 tick 上行动
         super().__init__(bus, spec)
         self.adapter = adapter
 

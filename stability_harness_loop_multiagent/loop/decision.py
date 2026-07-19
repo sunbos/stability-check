@@ -9,8 +9,8 @@ Verdict.decision ∈ {pass, warn, recheck, fail, abort}。
 
 一致性规则（安全底线）：
   - 关键事件            -> recheck   （不可被降级）
-  - 投票超时（无投票）  -> 中性风险 50（见 ``NEUTRAL_RISK``）；当每个顾问都
-                            弃权/沉默时，循环的投票合并器会返回该值，于是矩阵
+  - 投票超时（无投票）  -> 中性风险 50（见 ``NEUTRAL_RISK``）；当每个 Advisor 都
+                            弃权/沉默时，Loop 的投票合并器会返回该值，于是矩阵
                             在事实层面将其当作一次干净的通过。
   - 决策错误           -> 保守的 warn(60)（``CONSERVATIVE_RISK``），
                             绝不采用乐观的通过。
@@ -19,7 +19,7 @@ Verdict.decision ∈ {pass, warn, recheck, fail, abort}。
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping
 
-# 当没有顾问及时投票时（投票超时 / 全部弃权）使用的中性风险值。
+# 当没有 Advisor 及时投票时（投票超时 / 全部弃权）使用的中性风险值。
 NEUTRAL_RISK: float = 50.0
 # 当决策路径出错时所采用的保守风险值。
 CONSERVATIVE_RISK: float = 60.0

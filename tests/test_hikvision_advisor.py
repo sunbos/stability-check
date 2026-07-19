@@ -1,8 +1,8 @@
 # tests/test_hikvision_advisor.py
 import pytest
 from stability_harness_loop_multiagent.business.hikvision.advisor import HikvisionAdvisor
-from stability_harness_loop_multiagent.harness.bus import EventBus
-from stability_harness_loop_multiagent.harness.agent import AgentSpec
+from stability_harness_loop_multiagent.core.bus import EventBus
+from stability_harness_loop_multiagent.core.agent import AgentSpec
 
 
 @pytest.mark.asyncio

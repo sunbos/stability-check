@@ -6,8 +6,8 @@ from stability_harness_loop_multiagent.business.hikvision.adapter import Hikvisi
 from stability_harness_loop_multiagent.business.hikvision.diagnostic import (
     DiagnosticKernel, HEAL_TIME_SYNC, HEAL_RETRIGGER,
 )
-from stability_harness_loop_multiagent.harness.bus import EventBus
-from stability_harness_loop_multiagent.harness.agent import AgentSpec
+from stability_harness_loop_multiagent.core.bus import EventBus
+from stability_harness_loop_multiagent.core.agent import AgentSpec
 from tests.fakes.fake_hikvision import FakeHikvisionClient
 
 
@@ -181,8 +181,8 @@ async def test_worker_timeline_records_pre_reboot_query_stage():
     stages = [e["stage"] for e in worker._timeline]
     # New flow stages.
     assert "act_start" in stages
-    assert "event_delay_start" in stages
-    assert "event_delay_done" in stages
+    assert "door_poll_start" in stages
+    assert "door_poll_done" in stages
     assert "query_events_start" in stages
     assert "query_events_done" in stages
     assert "check_done" in stages
