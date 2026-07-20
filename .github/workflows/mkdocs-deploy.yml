@@ -5,6 +5,8 @@ name: Deploy docs to GitHub Pages
 # 对应仓库设置：Settings → Pages → Source 选择 "GitHub Actions"。
 # 说明：2026-07 期间 deploy-pages 曾因平台 bug 返回 404（community #200823），
 # 现已切回官方模式；若再次 404，可临时回退 legacy 分支部署（见 git 历史）。
+# 2026-07-20：f24984c 首次部署遇 GitHub Pages API 503（平台 Minor Outage），
+# 本次注释变更仅用于重新触发 deploy（build artifact 仍有效）。
 
 on:
   push:
