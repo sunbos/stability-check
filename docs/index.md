@@ -24,17 +24,20 @@
 # 安装（可选 rich 美化终端输出）
 pip install -e .[examples]
 
-# 端到端冒烟演示（不依赖 pytest）
-python stability_harness_loop_multiagent/examples/smoke.py
+# 通用装配模板（合成 / 真实设备双模式，env 驱动）
+python stability_harness_loop_multiagent/examples/generic_harness.py
 ```
 
 ```bash
-# 运行全部测试
+# 运行全部测试（无 HIK_HOST 自动 skip 真机用例）
 pytest tests/ -v
 
-# 跑一份场景（dry-run 不触真机）
+# 纯逻辑单元测试（不需真机，秒级完成）
+pytest tests/ -v --ignore=tests/test_stability_scenario.py
+
+# 跑一份 YAML 场景（需 .env 配 HIK_HOST）
 python -m stability_harness_loop_multiagent.examples.scenario_run \
-    --scenario configs/stability_0001_reboot.yaml --dry-run
+    --scenario configs/stability_0001_reboot.yaml --rounds 3
 ```
 
 ## 三引擎架构
