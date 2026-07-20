@@ -1,0 +1,34 @@
+/* D2 图自适应容器宽度(否则大图会溢出不可见) */
+.svg-object,
+.d2-svg,
+svg[class*="d2-"] {
+  max-width: 100% !important;
+  height: auto !important;
+  display: block;
+  margin: 1em auto;
+  border: 1px solid var(--md-default-fg-color--lightest, #e0e0e0);
+  border-radius: 4px;
+  background: #ffffff;
+  /* 提示可点击:鼠标变手型 + 轻微阴影 */
+  cursor: zoom-in;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+/* hover 时轻微抬升,暗示可点击放大 */
+.svg-object:hover,
+.d2-svg:hover,
+svg[class*="d2-"]:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  transform: translateY(-1px);
+}
+
+/* d2-lightbox.js 监听 div.d2 的 click 事件,点击放大需要鼠标提示 */
+div.d2 {
+  cursor: zoom-in;
+}
+
+/* 暗色模式下给 D2 图加浅色背景(因为 D2 默认白底) */
+[data-md-color-scheme="slate"] .d2-svg,
+[data-md-color-scheme="slate"] svg[class*="d2-"] {
+  background: #ffffff;
+}

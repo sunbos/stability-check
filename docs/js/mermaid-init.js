@@ -16,8 +16,29 @@
       var nodes = document.querySelectorAll(".mermaid");
       if (nodes.length === 0) return true; // 没图也认为初始化成功
       var p = window.mermaid.run({ nodes: nodes });
-      if (p && typeof p.catch === "function") {
-        p.catch(function (e) { console.error("[mermaid-init] run failed:", e); });
+      var onDone = function () {
+        // mermaid 生成的 SVG 用 width="100%"，若 .mermaid 容器宽度坍缩为 0
+        // （某些主题 CSS 把 .mermaid 当 inline 处理），SVG 也会变成 0x0。
+        // 渲染后强制容器为 block + 100% 宽，SVG 用 auto 高度撑开。
+        nodes.forEach(function (el) {
+          el.style.display = "block";
+          el.style.width = "100%";
+          el.style.overflow = "visible";
+          var svg = el.querySelector("svg");
+          if (svg) {
+            svg.style.display = "block";
+            svg.style.maxWidth = "100%";
+            svg.style.height = "auto";
+          }
+        });
+      };
+      if (p && typeof p.then === "function") {
+        p.then(onDone).catch(function (e) {
+          console.error("[mermaid-init] run failed:", e);
+        });
+      } else {
+        // 同步路径：mermaid.run 已完成渲染
+        onDone();
       }
       return true;
     } catch (e) {
