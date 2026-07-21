@@ -8,15 +8,16 @@
 
 ## 核心特性
 
-- **三引擎互不 import** —— `harness ←(EventBus)→ loop ←(EventBus)→ multi_agent`，
-  跨引擎通信只走事件总线，边界在模块层强制。
-- **事实独裁（安全底线）** —— `DecisionAuthority` 拥有唯一裁决权：任一事实为
-  `False` 即本轮 `fail`，不可被风险分或投票翻转为 `pass`。
-- **零第三方依赖** —— 仅用标准库（`asyncio` / `logging` / `time` / `math` / `random` / `secrets`）。
+- **三引擎互不 import** —— `core/` 契约内核(EventBus / Agent / combine_votes)是三引擎共同依赖;
+  `harness ←(EventBus)→ loop ←(EventBus)→ multi_agent`,跨引擎通信只走事件总线,边界在模块层强制。
+- **事实独裁(安全底线)** —— `DecisionAuthority` 拥有唯一裁决权:任一事实为
+  `False` 即本轮 `fail`,不可被风险分或投票翻转为 `pass`。
+- **零第三方依赖** —— 框架核心仅用标准库(`asyncio` / `logging` / `time` / `math` / `random` / `secrets`)。
 - **数据驱动场景层** —— 把「重启 / 升级 / 下发 / 长巡」类用例抽象成 `target` + `stress`
-  + `probe` + `loop` 四段 YAML，新增用例零代码改动。
-- **可观测与治理** —— 遥测（trace / metric / log）、看门狗心跳、Governance 熔断/鉴权、
-  多 Advisor 加权投票 + Observer 面板，全部经总线落地。
+  + `probe` + `loop` 四段 YAML;`capabilities/`(actions / probes / preconditions)原子化能力
+  被 `ScenarioWorker` 装配调度,新增用例零代码改动。
+- **可观测与治理** —— 遥测(trace / metric / log / fact)、看门狗心跳、Governance 熔断/鉴权、
+  多 Advisor 加权投票 + Observer 面板,全部经总线落地。
 
 ## 快速开始
 
@@ -44,15 +45,20 @@ python -m stability_harness_loop_multiagent.examples.scenario_run \
 
 ```mermaid
 flowchart LR
-    H[Harness<br/>运行时/治理/遥测/看门狗] <-->|EventBus| L[Loop<br/>控制循环/裁决/中止]
-    L <-->|EventBus| M[MAS<br/>Worker/Advisor/Observer]
+    C[Core<br/>EventBus / Agent / combine_votes] -.-> H[Harness<br/>运行时/治理/遥测/看门狗]
+    C -.-> L[Loop<br/>控制循环/裁决/中止]
+    C -.-> M[MAS<br/>Worker/Advisor/Observer]
+    H <-->|EventBus| L
+    L <-->|EventBus| M
 ```
 
-| 引擎 | 职责 | 包路径 |
+| 层 | 职责 | 包路径 |
 |------|------|--------|
+| **Core** | 契约内核(EventBus / Agent / combine_votes,零内部依赖) | `stability_harness_loop_multiagent/core/` |
 | **Harness** | 运行时 / 治理 / 可观测 / 校验 / 看门狗 | `stability_harness_loop_multiagent/harness/` |
 | **Loop** | 确定性控制循环 / 裁决 / 中止 / 调度 | `stability_harness_loop_multiagent/loop/` |
 | **MAS** | 领域执行 / 建议 / 观察 | `stability_harness_loop_multiagent/multi_agent/` |
+| **Business** | 领域装配层(Hikvision + Scenario YAML + capabilities) | `stability_harness_loop_multiagent/business/hikvision/` |
 
 ## 设计文档
 

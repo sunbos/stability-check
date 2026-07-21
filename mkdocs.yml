@@ -36,6 +36,7 @@ nav:
   - 代码物理地图: plans/代码物理地图.md
   - 决策日志: plans/决策日志.md
   - 事件链索引: plans/事件链索引.md
+  - API 参考: api-reference.md
   - 设计文档:
       - 架构演进路线: plans/架构演进路线.md
       - 门禁对讲通用稳定性用例集: plans/门禁对讲通用稳定性用例集.md
