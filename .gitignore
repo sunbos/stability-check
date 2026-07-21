@@ -17,6 +17,12 @@ _probe.log
 # Office 临时锁文件（Excel/Word 打开时自动生成）
 ~$*
 
+# 本地 D2 CLI 二进制（mkdocs-d2-plugin 用，CI 用 winget 装，不入 git）
+bin/
+
+# mkdocs-d2-plugin 缓存
+.cache/
+
 # MkDocs 构建产物（GitHub Pages 站点，由 CI 生成）
 site/
 .mkdocs_cache/

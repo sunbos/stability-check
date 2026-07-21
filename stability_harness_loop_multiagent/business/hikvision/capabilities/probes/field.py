@@ -39,20 +39,24 @@ class FieldProbe:
         self._na_if_absent = na_if_absent
         self._endpoint = endpoint
 
-    def check(self, snapshot: Any) -> dict[str, bool]:
-        """对 snapshot 执行字段断言,返回 fact 字典。"""
+    def check(self, snapshot: Any) -> dict[str, Any]:
+        """对 snapshot 执行字段断言,返回 fact 字典。
+
+        除了 ``probe_ok`` 外,还附带 ``probe_value``(实际字段值),
+        供观察者(ScenarioLiveReporter)在逐轮输出里展示真实状态值。
+        """
         # 先检查 na_if_absent:若该字段缺失,标记 NA 不强制 fail
         if self._na_if_absent:
             if resolve_field(snapshot, self._na_if_absent, _SENTINEL) is _SENTINEL:
-                return {"probe_ok": False, "probe_na": True}
+                return {"probe_ok": False, "probe_na": True, "probe_value": None}
         # 解析 field:缺失则 probe_ok=False
         value = resolve_field(snapshot, self._field, _SENTINEL)
         if value is _SENTINEL:
-            return {"probe_ok": False}
+            return {"probe_ok": False, "probe_value": None}
         # compare_probe 签名是 (value, probe_obj),probe_obj 需暴露 expect_equals/expect_in
         probe_obj = _ProbeParams(expect_equals=self._expect_equals, expect_in=self._expect_in)
         ok = compare_probe(value, probe_obj)
-        return {"probe_ok": bool(ok)}
+        return {"probe_ok": bool(ok), "probe_value": value}
 
 
 __all__ = ["FieldProbe"]

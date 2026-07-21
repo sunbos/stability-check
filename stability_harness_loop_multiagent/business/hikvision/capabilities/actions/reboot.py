@@ -4,8 +4,14 @@
 子设备:client.request_json("PUT", "/ISAPI/System/RebootBatchChild?format=json", body)
 
 RebootAction 不依赖 ctx 的其他字段,只读 ctx.client(HikvisionClient 实例)。
+
+返回的 ``ActionResult.data`` 携带 ``timing`` 字段(秒),便于观察者展示耗时细分:
+    timing = {"reboot_put": 0.3, "wait_online": 60.5}
+``reboot_put`` 是 PUT /ISAPI/System/reboot 调用本身耗时;
+``wait_online`` 是 wait_online() 轮询总耗时(含设备掉线 + HTTP 恢复 + 401 重置 auth 重试)。
 """
 import logging
+import time
 from typing import Any
 
 from .base import ActionResult
@@ -42,14 +48,24 @@ class RebootAction:
         client = ctx.client
         if self._target == "main":
             try:
+                t0 = time.monotonic()
                 client.reboot()
+                reboot_put = time.monotonic() - t0
+                t1 = time.monotonic()
                 ok = client.wait_online(
                     timeout=self._wait_online_timeout,
                     probe_endpoint=self._probe_endpoint,
                 )
+                wait_online = time.monotonic() - t1
                 if not ok:
-                    return ActionResult(ok=False, error="设备未在超时内重新上线")
-                return ActionResult(ok=True, data={"target": "main"})
+                    return ActionResult(ok=False, error="设备未在超时内重新上线",
+                                        data={"timing": {"reboot_put": reboot_put,
+                                                         "wait_online": wait_online}})
+                return ActionResult(ok=True, data={
+                    "target": "main",
+                    "timing": {"reboot_put": round(reboot_put, 2),
+                               "wait_online": round(wait_online, 2)},
+                })
             except Exception as exc:  # noqa: BLE001
                 logger.warning("RebootAction 主设备重启失败: %s", exc)
                 return ActionResult(ok=False, error=str(exc))

@@ -160,7 +160,8 @@ class ScenarioWorker(WorkerAgent):
         # 若 ctx 未初始化（pre_loop_setup 未调用），自动初始化（兼容旧调用方）
         if self._ctx is None:
             self.pre_loop_setup()
-        # 顺序执行 actions
+        # 顺序执行 actions；最后一条 action 的 data（含 timing 等）透传给观察者
+        last_data: dict = {}
         for action in self._actions:
             try:
                 result = action.execute(self._ctx)
@@ -169,18 +170,22 @@ class ScenarioWorker(WorkerAgent):
                 self._chain["stress_fail"] += 1
                 self._mark("action_error", reason=str(exc))
                 self._last_snapshot = {}
-                return {"stress_ok": False, "probe": {}}
+                return {"stress_ok": False, "probe": {}, "data": last_data}
             if not result.ok:
                 self._last_stress_ok = False
                 self._chain["stress_fail"] += 1
                 self._mark("action_failed", reason=result.error)
                 self._last_snapshot = {}
-                return {"stress_ok": False, "probe": {}}
+                return {"stress_ok": False, "probe": {}, "data": last_data,
+                        "error": result.error}
+            # 合并最后一个 action 的 data（含 timing 等可观测字段）
+            if result.data:
+                last_data = dict(result.data)
         self._last_stress_ok = True
         # 拉取 snapshot（供 FieldProbe/OnlineProbe/CountProbe 用）
         self._last_snapshot = self._fetch_snapshot()
         self._chain["rounds"] += 1
-        return {"stress_ok": True, "probe": self._last_snapshot}
+        return {"stress_ok": True, "probe": self._last_snapshot, "data": last_data}
 
     def _fetch_snapshot(self) -> dict:
         """从设备拉取 snapshot（用 client.get_work_status）。
